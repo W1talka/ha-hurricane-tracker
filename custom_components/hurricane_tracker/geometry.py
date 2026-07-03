@@ -16,6 +16,7 @@ from .const import (
     UNIT_KM,
 )
 from .nhc import basin_of, compass, haversine_mi
+from .regions import REGION_LABELS
 
 _BASEMAP_PATH = os.path.join(os.path.dirname(__file__), "basemap.bin")
 _LAYER_NAMES = ["coast", "states", "land"]
@@ -184,10 +185,27 @@ def assemble_payload(storm, fdata, home_lat, home_lon, units):
     pad = max((bbox[2] - bbox[0]), (bbox[3] - bbox[1])) * 0.15
     geo = clip_basemap(basemap, bbox, pad)
 
+    # Region labels whose anchor falls in view; the card decides what to draw and
+    # hides any that would collide with storm data.
+    labels = [r for r in REGION_LABELS
+              if bbox[0] <= r["lng"] <= bbox[2] and bbox[1] <= r["lat"] <= bbox[3]]
+
     cur_lat = storm.get("latitudeNumeric")
     cur_lng = storm.get("longitudeNumeric")
     dist_mi = (haversine_mi(home_lat, home_lon, cur_lat, cur_lng)
                if cur_lat is not None and cur_lng is not None else None)
+
+    # E/W and N/S components for the off-screen home edge marker on the card.
+    # E/W measured along home's parallel, N/S along home's meridian. dateline-safe.
+    ew_mi = ns_mi = None
+    ew_dir = ns_dir = None
+    if (cur_lat is not None and cur_lng is not None
+            and home_lat is not None and home_lon is not None):
+        dlon = ((cur_lng - home_lon + 180.0) % 360.0) - 180.0
+        ew_mi = haversine_mi(home_lat, home_lon, home_lat, home_lon + dlon)
+        ew_dir = "E" if dlon >= 0 else "W"
+        ns_mi = haversine_mi(home_lat, home_lon, cur_lat, home_lon)
+        ns_dir = "N" if cur_lat >= home_lat else "S"
 
     km = units == UNIT_KM
     wind_unit = "km/h" if km else "mph"
@@ -209,9 +227,14 @@ def assemble_payload(storm, fdata, home_lat, home_lon, units):
         if s is not None:
             move_text = "%s at %d %s" % (compass(md), s, wind_unit)
 
-    dist_val = None
-    if dist_mi is not None:
-        dist_val = round(dist_mi * _MI_TO_KM) if km else round(dist_mi)
+    def _dist_conv(mi):
+        if mi is None:
+            return None
+        return round(mi * _MI_TO_KM) if km else round(mi)
+
+    dist_val = _dist_conv(dist_mi)
+    ew_val = _dist_conv(ew_mi)
+    ns_val = _dist_conv(ns_mi)
 
     bkey = basin_of(storm.get("id"))
     meta = {
@@ -223,6 +246,10 @@ def assemble_payload(storm, fdata, home_lat, home_lon, units):
         "mslp": p0.get("mslp"),
         "moveText": move_text,
         "dist": dist_val,
+        "ew": ew_val,
+        "ewDir": ew_dir,
+        "ns": ns_val,
+        "nsDir": ns_dir,
         "distUnit": dist_unit,
         "windUnit": wind_unit,
         "basin": bkey,
@@ -243,5 +270,6 @@ def assemble_payload(storm, fdata, home_lat, home_lon, units):
         "points": points,
         "ww": fdata.get("ww") or [],
         "geo": geo,
+        "labels": labels,
         "meta": meta,
     }
