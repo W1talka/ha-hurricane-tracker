@@ -1,0 +1,91 @@
+set_options:
+  name: Set options
+  description: >-
+    Change Hurricane Tracker's settings from an automation or script. Any field
+    you leave out is unchanged. This is the one-shot / scripting half of the
+    control API; for everyday use, prefer the select and number entities
+    (Storms to show, Which storms, Range), which do the same thing and show the
+    current setting. Applying any change reloads the integration.
+  fields:
+    basin:
+      name: Storms to show
+      description: >-
+        Which storms to track: a scope mode (my home region, within range of
+        home, or anywhere in the world) or one specific basin.
+      required: false
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - label: My region (home basin only)
+              value: auto
+            - label: Within range of home
+              value: range
+            - label: Anywhere in the world
+              value: global
+            - label: Atlantic
+              value: atlantic
+            - label: East Pacific
+              value: east_pacific
+            - label: Central Pacific
+              value: central_pacific
+            - label: Northwest Pacific
+              value: nw_pacific
+            - label: North Indian
+              value: north_indian
+            - label: Southwest Indian
+              value: sw_indian
+            - label: Australian region
+              value: australian
+            - label: South Pacific
+              value: south_pacific
+    storm_filter:
+      name: Which storms to show
+      description: >-
+        Show only the storm threatening / closest to home, or every active
+        system (the card cycles through them).
+      required: false
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - label: Storm threatening / closest to home
+              value: threat
+            - label: All active systems
+              value: all
+    range:
+      name: Range
+      description: >-
+        The "within range" radius, in your configured distance unit (miles or
+        kilometers). Only affects the "Within range of home" scope.
+      required: false
+      selector:
+        number:
+          min: 100
+          max: 6000
+          step: 50
+          mode: box
+    units:
+      name: Units
+      description: Distance and speed units.
+      required: false
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - label: Miles / mph
+              value: mi
+            - label: Kilometers / km/h
+              value: km
+    off_season:
+      name: When no storms are active
+      description: Show a calm "all clear" state, or hide the card entirely.
+      required: false
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - label: Show a calm "all clear" state
+              value: calm
+            - label: Hide the card entirely
+              value: hide

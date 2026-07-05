@@ -112,6 +112,8 @@ show_scale: false
 | `show_labels` | Region/country name labels. |
 | `show_scale` | Far-offshore mileage scale (only appears when home is off-frame). |
 | `show_home` | Home marker. |
+| `show_winds` | Wind-field wash under the cone (Atlantic/Pacific storms only). |
+| `show_timeline` | At-home wind timeline below the map (only appears when forecast winds reach home). |
 | `smooth` | Smooth (curved) coastlines vs. straight segments. |
 
 ### Colors and style (default = follow theme)
@@ -165,6 +167,56 @@ what you find.
   a pager on the card to cycle between them.
 - Where NHC and GDACS overlap, NHC's official cone is used; GDACS fills the
   basins NHC doesn't forecast.
+
+## Changing settings from automations and dashboards
+
+Every setting is editable from the integration's **Configure** button, but you
+can also change it live — from a dashboard control, a script, or an automation.
+The integration exposes its settings two ways; both take effect immediately and
+reload the integration.
+
+### Entities (the easy way)
+
+Under the **Hurricane Tracker** device you'll find control entities whose current
+value is the live setting — so they double as a readout of what's configured:
+
+| Entity | Setting it controls |
+|---|---|
+| `select.hurricane_tracker_storms_to_show` | Scope / basin (My region, Within range, Global, or a specific basin). |
+| `select.hurricane_tracker_which_storms` | Threatening/closest storm only, or all active systems. |
+| `select.hurricane_tracker_units` | Miles or kilometers. |
+| `number.hurricane_tracker_range` | The "within range" radius, in your configured unit. |
+
+Drop them on a dashboard and change them like any other select or number, or set
+them from an automation:
+
+```yaml
+service: select.select_option
+target:
+  entity_id: select.hurricane_tracker_storms_to_show
+data:
+  option: Anywhere in the world
+```
+
+### `hurricane_tracker.set_options` service (for scripting)
+
+A single service changes any subset of settings in one call — handy in scripts.
+Any field you leave out is unchanged:
+
+```yaml
+service: hurricane_tracker.set_options
+data:
+  basin: atlantic
+  storm_filter: all
+  range: 800
+  units: mi
+  off_season: calm
+```
+
+Valid values: **basin** — `auto`, `range`, `global`, `atlantic`, `east_pacific`,
+`central_pacific`, `nw_pacific`, `north_indian`, `sw_indian`, `australian`,
+`south_pacific`; **storm_filter** — `threat`, `all`; **units** — `mi`, `km`;
+**off_season** — `calm`, `hide`; **range** — a number (100–6000).
 
 ## Data sources and credits
 

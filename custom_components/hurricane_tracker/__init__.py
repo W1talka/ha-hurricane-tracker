@@ -17,11 +17,30 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.loader import async_get_integration
 
-from .const import CARD_FILENAME, DOMAIN, FRONTEND_URL_BASE
+from .const import (
+    BASINS,
+    CARD_FILENAME,
+    CONF_BASIN,
+    CONF_FILTER,
+    CONF_OFF_SEASON,
+    CONF_RANGE,
+    CONF_UNITS,
+    DOMAIN,
+    FILTERS,
+    FRONTEND_URL_BASE,
+    OFF_SEASON,
+    SERVICE_SET_OPTIONS,
+    UNITS,
+)
 from .coordinator import HurricaneCoordinator
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR]
+PLATFORMS = [
+    Platform.SENSOR,
+    Platform.BINARY_SENSOR,
+    Platform.SELECT,
+    Platform.NUMBER,
+]
 _CARD_URL = f"{FRONTEND_URL_BASE}/{CARD_FILENAME}"
 
 
@@ -32,6 +51,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # `custom:hurricane-card` instead of erroring. Both are idempotent.
     await _async_register_frontend(hass)
     _register_ws(hass)
+    _register_services(hass)
 
     coordinator = HurricaneCoordinator(hass, entry)
     await coordinator.async_config_entry_first_refresh()
@@ -52,6 +72,58 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def _reload_on_change(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+# ---------------------------------------------------------------------------
+# Options control API: the ONE path that mutates entry.options.
+# The set_options service and the select/number entities both call this. It
+# merges validated changes into entry.options and hands off to HA's
+# async_update_entry, which trips the update listener (_reload_on_change) so the
+# coordinator reloads with the new settings. Keeping a single funnel means the
+# service and the entities can never drift in how they apply a change.
+# ---------------------------------------------------------------------------
+def async_apply_options(
+    hass: HomeAssistant, entry: ConfigEntry, changes: dict
+) -> None:
+    clean = {k: v for k, v in changes.items() if v is not None}
+    if not clean:
+        return
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, **clean}
+    )
+
+
+# ---------------------------------------------------------------------------
+# Service: set_options -- the scripting / one-shot half of the public control
+# API (the entities are the primary interface). Accepts any subset of the
+# writable options; validates against the same value spaces the config flow
+# uses; applies through async_apply_options. Registered once, entry-agnostic
+# (single-instance integration), guarded like the websocket command.
+# ---------------------------------------------------------------------------
+@callback
+def _register_services(hass: HomeAssistant) -> None:
+    if hass.data.get(f"{DOMAIN}_services"):
+        return
+    hass.data[f"{DOMAIN}_services"] = True
+
+    schema = vol.Schema({
+        vol.Optional(CONF_BASIN): vol.In(BASINS),
+        vol.Optional(CONF_FILTER): vol.In(FILTERS),
+        vol.Optional(CONF_RANGE): vol.Coerce(float),
+        vol.Optional(CONF_UNITS): vol.In(UNITS),
+        vol.Optional(CONF_OFF_SEASON): vol.In(OFF_SEASON),
+    })
+
+    async def _set_options(call) -> None:
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if not entries:
+            return
+        changes = {k: call.data[k] for k in call.data}
+        async_apply_options(hass, entries[0], changes)
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_SET_OPTIONS, _set_options, schema=schema
+    )
 
 
 # ---------------------------------------------------------------------------

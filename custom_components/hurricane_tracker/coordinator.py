@@ -46,12 +46,14 @@ def _build(home_lat, home_lon, basin, units, storm_filter, range_mi=None):
             return mock
 
     active = []
+    errors = []
     # NHC: Atlantic + E/Central Pacific, native cone.
     try:
         raw = nhc.http_get(CURRENT_STORMS_URL)
         active += (json.loads(raw) or {}).get("activeStorms") or []
     except Exception as err:  # one source down shouldn't blind the other
         _LOGGER.warning("hurricane_tracker: NHC fetch failed: %s", err)
+        errors.append("NHC")
     # GDACS: rest of the world. Drop any GDACS storm sitting in an NHC basin so
     # NHC's official cone wins there (dedupe).
     try:
@@ -60,16 +62,28 @@ def _build(home_lat, home_lon, basin, units, storm_filter, range_mi=None):
         active += gstorms
     except Exception as err:
         _LOGGER.warning("hurricane_tracker: GDACS fetch failed: %s", err)
+        errors.append("GDACS")
 
     selected = nhc.select_storms(active, home_lat, home_lon, basin,
                                  storm_filter, range_mi)
 
     if not selected:
-        # No storm to show. If there are systems active but none matched the
-        # scope/basin filter, say so honestly rather than "all clear".
-        reason = "clear" if not active else "none_matched"
+        # No storm to show. Three distinct cases, and we must NOT conflate them:
+        #  - a source errored and nothing came through -> we're partly/fully blind;
+        #    say "unavailable", never "all clear" (a user in a live basin would be
+        #    falsely reassured).
+        #  - systems are active but none matched this card's scope -> "none_matched".
+        #  - everything fetched clean and the ocean is genuinely empty -> "clear".
+        if errors and not active:
+            reason = "unavailable"
+        elif active:
+            reason = "none_matched"
+        else:
+            reason = "clear"
         return {"ok": False, "reason": reason,
-                "activeAnywhere": len(active), "ts": int(time.time() * 1000)}
+                "activeAnywhere": len(active),
+                "failedSources": errors,
+                "ts": int(time.time() * 1000)}
 
     payloads = []
     for storm in selected[:MAX_STORMS]:

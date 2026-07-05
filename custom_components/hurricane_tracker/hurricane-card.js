@@ -20,7 +20,7 @@ const VBW = 800, VBH = 600;
 /* Saffir-Simpson identity colors (fixed — a Cat-3 dot must read as Cat-3 on any
  * theme). TD/TS are the sub-hurricane intensities. */
 const CAT_COLOR = {
-  TD: "#5BA8E0", TS: "#3ECC7A",
+  TD: "#5BA8E0", TS: "#3ECC7A", HU: "#B5474D",
   "1": "#FFE14D", "2": "#FFB52E", "3": "#FF7A33", "4": "#FF4D6D", "5": "#E05BE0",
 };
 const catColor = (c) => CAT_COLOR[c] || CAT_COLOR.TS;
@@ -45,6 +45,7 @@ const TOGGLES = ["show_land", "show_states", "show_coast", "show_labels", "show_
 function catDotLabel(c) {
   const k = String(c || "").toUpperCase();
   if (["1", "2", "3", "4", "5"].includes(k)) return k;
+  if (k === "HU") return "HU";
   return k === "TD" ? "TD" : "TS";
 }
 function catLabel(c) {
@@ -52,7 +53,7 @@ function catLabel(c) {
   const k = String(c).toUpperCase();
   if (["1", "2", "3", "4", "5"].includes(k)) return "CAT " + k;
   if (k === "TS" || k === "TD") return k;
-  if (/HURRICANE/.test(k)) return "HURRICANE";
+  if (k === "HU" || /HURRICANE/.test(k)) return "HURRICANE";
   if (/TROP.*STORM/.test(k)) return "TS";
   if (/DEPRESS/.test(k)) return "TD";
   return "";
@@ -372,7 +373,7 @@ function buildConeSvg(st, cfg) {
   (st.points || []).forEach((p, i) => {
     if (p.lng == null || p.lat == null) return;
     const [x, y] = projPts[i];
-    const ink = (p.cat === "TD" || p.cat === "TS") ? "#EDE3D2" : "#14110d";
+    const ink = (p.cat === "TD" || p.cat === "TS" || p.cat === "HU") ? "#EDE3D2" : "#14110d";
     storm.push(`<circle class="hu-fdot" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="12" fill="${catColor(p.cat)}"/>`);
     storm.push(`<text class="hu-fcat" x="${x.toFixed(1)}" y="${(y + 5).toFixed(1)}" fill="${ink}">${esc(catDotLabel(p.cat))}</text>`);
     keepOut.push({ x1: x - 15, y1: y - 15, x2: x + 15, y2: y + 15 });
@@ -708,6 +709,9 @@ class HurricaneCard extends HTMLElement {
       return;
     } else if (d.reason === "no_geometry") {
       body = this._msg("mdi:weather-hurricane", "Storm active", "Cone data isn\u2019t available yet \u2014 checking again shortly.");
+    } else if (d.reason === "unavailable") {
+      body = this._msg("mdi:cloud-alert", "Storm data unavailable",
+        "Couldn\u2019t reach the storm feed \u2014 retrying automatically.");
     } else {
       body = this._msg("mdi:weather-sunny", "All clear", "No active storms right now.");
     }

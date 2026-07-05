@@ -121,3 +121,15 @@ PAST_MILES = 110
 # --- frontend ---------------------------------------------------------------
 CARD_FILENAME = "hurricane-card.js"
 FRONTEND_URL_BASE = "/hurricane_tracker_frontend"
+
+# --- public control API -----------------------------------------------------
+# The integration's options (basin/filter/range/units/off-season) are Python-only
+# by nature: HA lets outside code change an integration only via services or by
+# operating its entities. We expose BOTH -- a set_options service (one-shot /
+# scripting) and select/number entities (the primary, self-documenting interface).
+# Both funnel through the same __init__.async_apply_options path: merge into
+# entry.options -> async_update_entry -> the update listener reloads the coordinator.
+SERVICE_SET_OPTIONS = "set_options"
+# Service field names == the option keys they write, so the service payload is
+# just a subset of the options dict. (basin/storm_filter/range/units/off_season
+# are already defined above as CONF_* / values.)

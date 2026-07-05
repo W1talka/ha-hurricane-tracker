@@ -28,10 +28,11 @@ _REASON_STATE = {
     "not_covered": "not covered",
     "none_matched": "clear",
     "no_geometry": "unavailable",
+    "unavailable": "unavailable",
 }
 
 _CAT_LABEL = {
-    "TD": "Tropical Depression", "TS": "Tropical Storm",
+    "TD": "Tropical Depression", "TS": "Tropical Storm", "HU": "Hurricane",
     "1": "Category 1", "2": "Category 2", "3": "Category 3",
     "4": "Category 4", "5": "Category 5",
 }

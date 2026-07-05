@@ -32,7 +32,7 @@ _CTX = ssl.create_default_context()
 # Saffir-Simpson-ish thresholds in knots (mirrors nhc.cat_from's intent).
 _SS_KT = [(137, "5"), (113, "4"), (96, "3"), (83, "2"), (64, "1")]
 # GDACS line intensity label -> our category token.
-_INTENSITY_CAT = {"HU": "1", "TS": "TS", "TD": "TD", "SD": "TD", "SS": "TS"}
+_INTENSITY_CAT = {"HU": "HU", "TS": "TS", "TD": "TD", "SD": "TD", "SS": "TS"}
 _KT_PER_KMH = 1.0 / 1.852
 _KT_PER_MPH = 1.0 / 1.15078
 
