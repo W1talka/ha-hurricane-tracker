@@ -3,6 +3,16 @@
 All blocking work (network + shapefile parse + basemap clip) runs in an executor
 so the event loop is never touched. On a failed poll the coordinator keeps the
 last-good data (DataUpdateCoordinator behaviour) and the card shows staleness.
+
+Per-storm bake cache (source-agnostic). The storm-list fetch is cheap and rarely
+fails; the PER-STORM geometry fetch is the fragile part -- NHC shapefile zips and
+GDACS's per-event geometry endpoint both go slow/flaky, and a single timeout used
+to drop the storm off the card entirely (it still showed on the provider's own
+site, so the card looked like an all-clear when it wasn't). Now every successful
+bake is cached by storm id; if a later poll fails to bake that same storm, we serve
+the last-good payload flagged `stale` (with the bake time) instead of dropping it.
+A slightly old cone beats a vanished hurricane. Cache entries age out after
+CACHE_MAX_AGE_MS so a genuinely-gone storm doesn't linger.
 """
 from __future__ import annotations
 
@@ -34,11 +44,28 @@ _LOGGER = logging.getLogger(__name__)
 MAX_STORMS = 8  # cap baked systems in "show all" mode (peak season safety)
 _MI_PER_KM = 1.0 / 1.609344
 
+# How long a cached bake is allowed to stand in for a failed re-bake. NHC and
+# GDACS both reissue on the standard advisory cadence -- ~every 6 h -- so 9 h
+# (1.5x that) rides out one fully-missed update cycle without holding a
+# dissipated storm on screen indefinitely. Past this, the cache entry is dropped
+# and the storm falls through to the unavailable/none_matched/clear logic.
+CACHE_MAX_AGE_MS = 9 * 60 * 60 * 1000
 
-def _build(home_lat, home_lon, basin, units, storm_filter, range_mi=None):
+
+def _build(home_lat, home_lon, basin, units, storm_filter, range_mi=None,
+           cache=None):
     """Blocking pipeline: fetch (NHC + GDACS) -> merge/dedupe -> select -> bake.
-    Returns the coordinator data dict. Runs inside an executor."""
+    Returns the coordinator data dict. Runs inside an executor.
+
+    `cache` is the coordinator's per-storm bake cache {id: {payload, ts}}, passed
+    in so it survives across polls. Mutated in place: fresh bakes overwrite,
+    stale-but-usable entries are served on failure, expired entries are pruned.
+    """
     import json
+
+    if cache is None:
+        cache = {}
+    now_ms = int(time.time() * 1000)
 
     if _dev_mock is not None and getattr(_dev_mock, "ENABLED", False):
         mock = _dev_mock.build(home_lat, home_lon, units)
@@ -83,30 +110,62 @@ def _build(home_lat, home_lon, basin, units, storm_filter, range_mi=None):
         return {"ok": False, "reason": reason,
                 "activeAnywhere": len(active),
                 "failedSources": errors,
-                "ts": int(time.time() * 1000)}
+                "ts": now_ms}
 
     payloads = []
+    baked_ok = False        # did at least one storm bake fresh this poll?
+    bake_failed_sources = set()   # which sources had a storm fail to bake
     for storm in selected[:MAX_STORMS]:
+        sid = storm.get("id")
+        is_gdacs = bool(storm.get("_gdacs"))
         try:
-            if storm.get("_gdacs"):
+            if is_gdacs:
                 fdata = gdacs.fetch_storm_geometry(storm)
             else:
                 fdata = nhc.fetch_storm_geometry(storm)
-            if not fdata:
-                continue
-            pl = assemble_payload(storm, fdata, home_lat, home_lon, units)
+            pl = assemble_payload(storm, fdata, home_lat, home_lon, units) if fdata else None
             if pl:
+                # Fresh, good bake: serve it and cache it (not stale).
+                pl["stale"] = False
                 payloads.append(pl)
-        except Exception as err:  # one bad storm shouldn't sink the whole poll
-            _LOGGER.warning("hurricane_tracker: failed baking %s: %s",
-                            storm.get("id"), err)
+                if sid:
+                    cache[sid] = {"payload": pl, "ts": now_ms}
+                baked_ok = True
+                continue
+            # fdata/payload empty but no exception -> fall through to cache below
+            raise ValueError("empty geometry")
+        except Exception as err:
+            _LOGGER.warning("hurricane_tracker: failed baking %s: %s", sid, err)
+            bake_failed_sources.add("GDACS" if is_gdacs else "NHC")
+            # Fall back to the last-good bake if we have one and it's fresh enough.
+            ent = cache.get(sid) if sid else None
+            if ent and (now_ms - ent["ts"]) <= CACHE_MAX_AGE_MS:
+                stale_pl = dict(ent["payload"])
+                stale_pl["stale"] = True
+                stale_pl["bakedTs"] = ent["ts"]     # epoch-ms; card formats local
+                payloads.append(stale_pl)
+                _LOGGER.info("hurricane_tracker: serving cached %s (%.0f min old)",
+                             sid, (now_ms - ent["ts"]) / 60000.0)
+
+    # prune expired cache entries so a dead storm doesn't haunt the cache
+    for sid in [k for k, v in cache.items() if now_ms - v["ts"] > CACHE_MAX_AGE_MS]:
+        cache.pop(sid, None)
 
     if not payloads:
-        return {"ok": False, "reason": "no_geometry",
-                "activeAnywhere": len(active), "ts": int(time.time() * 1000)}
+        # Storms WERE selected but nothing baked and nothing cacheable -> we're
+        # blind to a known-active storm. That's "unavailable", not a silent
+        # nothing -- same falsely-reassured risk as the no-selection case above.
+        # Name the source(s) whose bake failed so the card can say "GDACS" rather
+        # than a generic "storm feed" (the list fetch succeeded, so we know which).
+        failed = errors or sorted(bake_failed_sources) or ["storm feed"]
+        return {"ok": False, "reason": "unavailable",
+                "activeAnywhere": len(active),
+                "failedSources": failed,
+                "ts": now_ms}
 
     return {"ok": True, "storms": payloads, "count": len(payloads),
-            "ts": int(time.time() * 1000)}
+            "anyStale": any(p.get("stale") for p in payloads),
+            "anyFresh": baked_ok, "ts": now_ms}
 
 
 class HurricaneCoordinator(DataUpdateCoordinator):
@@ -120,6 +179,7 @@ class HurricaneCoordinator(DataUpdateCoordinator):
             update_interval=timedelta(minutes=POLL_MINUTES),
         )
         self.entry = entry
+        self._bake_cache = {}   # {storm_id: {"payload": .., "ts": epoch_ms}}
 
     def _cfg(self):
         """Options override data (options flow is how settings get edited)."""
@@ -150,7 +210,7 @@ class HurricaneCoordinator(DataUpdateCoordinator):
         try:
             result = await self.hass.async_add_executor_job(
                 _build, cfg["lat"], cfg["lon"], cfg["basin"], cfg["units"],
-                cfg["filter"], range_mi,
+                cfg["filter"], range_mi, self._bake_cache,
             )
         except Exception as err:
             raise UpdateFailed(f"update failed: {err}") from err

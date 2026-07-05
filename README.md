@@ -157,6 +157,12 @@ If you've done all three and still see the error, open
 [file an issue](https://github.com/aaronmayeux/ha-hurricane-tracker/issues) with
 what you find.
 
+**"Storm active — map unavailable"** (or "Storm feed unavailable") means a data
+source timed out or errored on that poll. It is deliberately **not** an all-clear:
+if a storm's map can't be loaded, the card says so rather than showing a calm sky.
+The card retries automatically on the next poll. If a storm was drawn recently,
+the last good map stays up with a "showing last update" note instead of vanishing.
+
 ## How storm selection works
 
 - **Scope** (the *Storms to show* option) decides which storms are eligible:
@@ -217,6 +223,34 @@ Valid values: **basin** — `auto`, `range`, `global`, `atlantic`, `east_pacific
 `central_pacific`, `nw_pacific`, `north_indian`, `sw_indian`, `australian`,
 `south_pacific`; **storm_filter** — `threat`, `all`; **units** — `mi`, `km`;
 **off_season** — `calm`, `hide`; **range** — a number (100–6000).
+
+## Sensors for automations
+
+The **Hurricane Tracker** device also exposes read-only sensors that describe the
+primary (closest/threatening) storm, so you can trigger automations on it. The
+heavy map geometry never rides on entity state — these are plain scalars.
+
+| Entity | State |
+|---|---|
+| `sensor.hurricane_tracker_storm` | Storm name, or `clear` / `unavailable`. |
+| `sensor.hurricane_tracker_distance` | Distance from home to the storm. |
+| `sensor.hurricane_tracker_closest_approach` | Forecast closest approach. |
+| `sensor.hurricane_tracker_category` | Category token (`TD`, `TS`, `1`–`5`, `HU`). |
+| `binary_sensor.hurricane_tracker_watch_or_warning` | On when the storm carries an NHC watch/warning (NHC basins only). |
+
+The summary `sensor.hurricane_tracker_storm` carries the details as attributes:
+`category`, `classification`, `wind`, `gust`, `pressure_mb`, `movement`,
+`distance`, `closest_approach`, `closest_approach_hours`, `basin`, and `advisory`.
+
+For storms sourced from GDACS (every basin outside the NHC's), four more
+attributes carry GDACS's own official alert data — absent on NHC storms:
+
+| Attribute | Meaning |
+|---|---|
+| `gdacs_alert_level` | GDACS alert tier: `Green`, `Orange`, or `Red`. |
+| `gdacs_alert_score` | Numeric alert score (0–3). |
+| `affected_countries` | Countries GDACS lists as affected, by name. |
+| `affected_iso` | The same countries as ISO-2 codes. |
 
 ## Data sources and credits
 

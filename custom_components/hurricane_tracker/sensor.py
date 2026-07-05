@@ -108,7 +108,7 @@ class HurricaneSensor(_HurricaneEntity):
         if not storms:
             return {"active": False}
         m = storms[0].get("meta") or {}
-        return {
+        attrs = {
             "active": True,
             "count": data.get("count"),
             "category": m.get("cat"),
@@ -125,6 +125,14 @@ class HurricaneSensor(_HurricaneEntity):
             "basin": m.get("basinName"),
             "advisory": storms[0].get("advisory"),
         }
+        # GDACS-only: GDACS's own official alert tier + affected countries.
+        # Absent for NHC storms (no _gdacs handle), so only surface when present.
+        if m.get("alertLevel") is not None:
+            attrs["gdacs_alert_level"] = m.get("alertLevel")
+            attrs["gdacs_alert_score"] = m.get("alertScore")
+            attrs["affected_countries"] = m.get("affectedCountries")
+            attrs["affected_iso"] = m.get("affectedIso")
+        return attrs
 
 
 class HurricaneDistanceSensor(_HurricaneEntity):

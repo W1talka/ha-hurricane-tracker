@@ -23,7 +23,7 @@ import ssl
 import urllib.request
 from datetime import datetime, timezone
 
-from .const import GDACS_EVENTS_URL, HTTP_TIMEOUT, USER_AGENT
+from .const import GDACS_EVENTS_URL, GDACS_GEOMETRY_TIMEOUT, HTTP_TIMEOUT, USER_AGENT
 from .nhc import basin_from_latlon, bearing_deg, haversine_mi
 
 _HEADERS = {"User-Agent": USER_AGENT}
@@ -40,9 +40,9 @@ _KT_PER_MPH = 1.0 / 1.15078
 # ---------------------------------------------------------------------------
 # HTTP (blocking)
 # ---------------------------------------------------------------------------
-def _get(url):
+def _get(url, timeout=HTTP_TIMEOUT):
     req = urllib.request.Request(url, headers=_HEADERS)
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT, context=_CTX) as r:
+    with urllib.request.urlopen(req, timeout=timeout, context=_CTX) as r:
         return json.loads(r.read().decode("utf-8", "replace"))
 
 
@@ -83,6 +83,13 @@ def list_storms():
                 "source": p.get("source"),
                 "severity": (p.get("severitydata") or {}).get("severity"),
                 "modified": p.get("datemodified"),
+                # GDACS's own official alert tier (Green/Orange/Red + 0-3 score)
+                # and the structured affected-country list. Carried through to the
+                # summary sensor as attributes -- honest source-of-record values,
+                # distinct from our derived category. NHC storms have no equivalent.
+                "alertlevel": p.get("alertlevel"),
+                "alertscore": p.get("alertscore"),
+                "affectedcountries": p.get("affectedcountries") or [],
             },
         })
     return out
@@ -142,7 +149,8 @@ def fetch_storm_geometry(storm):
     schema. Mutates `storm` with derived movement so assemble_payload can render
     the motion line. Blocking."""
     meta = storm.get("_gdacs") or {}
-    g = _get(meta.get("geometry")) or {}
+    # per-event geometry is the slow endpoint -> longer timeout (see const)
+    g = _get(meta.get("geometry"), timeout=GDACS_GEOMETRY_TIMEOUT) or {}
     feats = g.get("features", []) or []
 
     out = {

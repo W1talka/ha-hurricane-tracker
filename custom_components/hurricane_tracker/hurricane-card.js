@@ -96,6 +96,28 @@ function fmtClock(refTime, tau) {
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+/* Failed-source codes -> plain names for the failure notes. The coordinator
+ * sends ["NHC"], ["GDACS"], both, or ["storm feed"] as a generic fallback. */
+function sourceNames(list) {
+  const map = { NHC: "the NHC", GDACS: "GDACS" };
+  const named = (list || []).map((s) => map[s] || "the storm feed");
+  if (!named.length) return "the storm feed";
+  if (named.length === 1) return named[0];
+  if (named.length === 2) return `${named[0]} and ${named[1]}`;
+  return named.slice(0, -1).join(", ") + ", and " + named[named.length - 1];
+}
+
+/* epoch-ms -> short local date/time for the stale note, in the browser's zone
+ * (users think local, not UTC). e.g. "3:40 PM" today, "Jul 4, 3:40 PM" if older. */
+function fmtLocal(ms) {
+  if (ms == null) return "";
+  const d = new Date(ms), now = new Date();
+  const t = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return t;
+  return d.toLocaleDateString([], { month: "short", day: "numeric" }) + ", " + t;
+}
+
 /* ---- projection: lng/lat -> SVG px through the storm bbox ----------------- */
 function makeProject(bbox) {
   const [minLng, minLat, maxLng, maxLat] = bbox;
@@ -684,8 +706,11 @@ class HurricaneCard extends HTMLElement {
       const storms = d.storms;
       if (this._idx >= storms.length) this._idx = 0;
       const st = storms[this._idx];
-      const stale = this._lastOk === false
-        ? `<div class="hu-stale">Data may be out of date \u2014 last update failed.</div>` : "";
+      // Per-storm staleness: this storm's live re-bake failed and we're showing
+      // its last-good cached cone. Name the time so the user knows how old it is.
+      const stale = st.stale
+        ? `<div class="hu-stale">Live feed unreachable \u2014 showing last update${
+            st.bakedTs ? " from " + esc(fmtLocal(st.bakedTs)) : ""}.</div>` : "";
       let pager = "";
       if (storms.length > 1) {
         pager = `<div class="hu-pager">
@@ -707,11 +732,23 @@ class HurricaneCard extends HTMLElement {
     } else if (d.off_season === "hide") {
       this.style.display = "none";
       return;
-    } else if (d.reason === "no_geometry") {
-      body = this._msg("mdi:weather-hurricane", "Storm active", "Cone data isn\u2019t available yet \u2014 checking again shortly.");
     } else if (d.reason === "unavailable") {
-      body = this._msg("mdi:cloud-alert", "Storm data unavailable",
-        "Couldn\u2019t reach the storm feed \u2014 retrying automatically.");
+      // A source is down. If systems are known active anywhere, a storm may be
+      // live and we simply can\u2019t draw it -- say so, and make clear this is an
+      // outage, NOT an all-clear. Name the feed that failed so it\u2019s checkable.
+      const src = sourceNames(d.failedSources);
+      if (d.activeAnywhere) {
+        body = this._msg("mdi:cloud-alert", "Storm active \u2014 map unavailable",
+          `A storm is active, but its map couldn\u2019t load from ${src}. This is a data outage, not an all-clear. Retrying automatically.`);
+      } else {
+        body = this._msg("mdi:cloud-alert", "Storm feed unavailable",
+          `Couldn\u2019t reach ${src}. This is a data outage, not an all-clear \u2014 there may be a storm we can\u2019t see. Retrying automatically.`);
+      }
+    } else if (d.reason === "no_geometry") {
+      // Defensive: post-cache this should rarely fire (a failed bake now serves
+      // cached data or routes to "unavailable"). Treat it as map-unavailable.
+      body = this._msg("mdi:cloud-alert", "Storm active \u2014 map unavailable",
+        "A storm is active, but its map couldn\u2019t load. Retrying automatically.");
     } else {
       body = this._msg("mdi:weather-sunny", "All clear", "No active storms right now.");
     }

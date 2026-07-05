@@ -89,6 +89,12 @@ POLL_MINUTES = 30
 CURRENT_STORMS_URL = "https://www.nhc.noaa.gov/CurrentStorms.json"
 GDACS_EVENTS_URL = "https://www.gdacs.org/gdacsapi/api/Events/geteventlist/EVENTS4APP"
 HTTP_TIMEOUT = 45
+# GDACS's per-event GEOMETRY endpoint (the cone polygon) is materially slower and
+# flakier than the event list or NHC -- it routinely needs more than 45 s. Give
+# only that one call more room so the bake can succeed and seed the cache; the
+# list fetch and NHC stay at HTTP_TIMEOUT. Not blanket-raised, because a hung
+# fetch ties up an HA executor thread for the whole duration (matters on a Pi).
+GDACS_GEOMETRY_TIMEOUT = 90
 USER_AGENT = "ha-hurricane-tracker (Home Assistant custom integration)"
 
 # --- NHC forecast wind radii (Phase 3, NHC-only) ----------------------------
@@ -99,8 +105,10 @@ USER_AGENT = "ha-hurricane-tracker (Home Assistant custom integration)"
 #   layer = WIND_SLOT_BLOCK[group] + (slot-1)*WIND_SLOT_STEP + WIND_ADVISORY_OFFSET
 # (e.g. AT1 -> 17, AT2 -> 43, EP1 -> 147, CP1 -> 277). Fields on the layer:
 # radii (34/50/64), stormid, tau, ne/se/sw/nw; geometry is polygon (drawn as-is).
-# UNVERIFIED against a live storm (none active at build time): fetch soft-fails
-# and this must NOT ship until proven on a real active NHC storm.
+# SHIPPED v0.1.4 unvalidated (Aaron's call -- no active NHC storm existed at build
+# time). Fetch soft-fails to an empty field, so an install is never broken by its
+# absence; but the live fetch/parse is UNPROVEN end-to-end. Validate on the first
+# real active NHC storm and patch if the live schema differs from the assumed one.
 WIND_RADII_URL = ("https://mapservices.weather.noaa.gov/tropical/rest/services/"
                   "tropical/NHC_tropical_weather/MapServer")
 WIND_SLOT_BLOCK = {"AT": 4, "EP": 134, "CP": 264}
@@ -108,8 +116,8 @@ WIND_SLOT_STEP = 26
 WIND_ADVISORY_OFFSET = 13   # "<slot> Advisory Wind Field" = current radii
 # Phase 4: the sibling "<slot> Forecast Wind Radii" layer (offset +12, e.g. AT1=16)
 # carries a `tau` field, so it gives the 34/50/64 kt radii at every forecast time,
-# not just the current one. Same radii fields; same soft-fail / do-not-ship-unproven
-# rule as the Advisory Wind Field above.
+# not just the current one. Same radii fields; same shipped-v0.1.4-unvalidated,
+# soft-fail, validate-on-first-live-storm status as the Advisory Wind Field above.
 WIND_FORECAST_OFFSET = 12
 WIND_RADII_KTS = (34, 50, 64)
 

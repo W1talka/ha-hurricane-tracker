@@ -569,6 +569,18 @@ def assemble_payload(storm, fdata, home_lat, home_lon, units):
         "peak": _peak(points, p0.get("cat", "TS")),
     }
 
+    # GDACS-only: pass through GDACS's own alert tier + affected-country list as
+    # meta (sensor attributes). NHC storms carry no _gdacs handle -> keys stay
+    # absent, and the sensor omits them. Not drawn on the map.
+    gd = storm.get("_gdacs") or {}
+    if gd:
+        countries = gd.get("affectedcountries") or []
+        meta["alertLevel"] = gd.get("alertlevel")
+        meta["alertScore"] = gd.get("alertscore")
+        meta["affectedCountries"] = [c.get("countryname") for c in countries
+                                     if c.get("countryname")]
+        meta["affectedIso"] = [c.get("iso2") for c in countries if c.get("iso2")]
+
     # Phase 4: at-home exposure timeline (NHC-only; reuses the Phase 3 rings). Only
     # attached when home actually enters a forecast wind field. refTime (epoch ms,
     # UTC of tau=0) lets the card show wall-clock windows; absent -> card falls back
