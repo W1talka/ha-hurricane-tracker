@@ -126,6 +126,17 @@ WIND_RADII_KTS = (34, 50, 64)
 # same physical length on screen (consistent zoom).
 PAST_MILES = 110
 
+# --- bake-cache persistence -------------------------------------------------
+# The per-storm bake cache (coordinator._bake_cache) is persisted to HA's
+# .storage so an HA restart DURING a feed outage doesn't wake up blind -- the
+# residual gap left by the v0.1.6 in-memory-only cache. Store is versioned: a
+# version mismatch on load drops the cache (a stale-shaped payload is worse than
+# an empty cache -- the next poll rebuilds it). The 9 h age-out (CACHE_MAX_AGE_MS)
+# is re-applied on hydrate, so entries that aged out while HA was off are dropped
+# on load, and the cache is capped at MAX_STORMS newest entries.
+CACHE_STORAGE_KEY = "hurricane_tracker_bake_cache"
+CACHE_STORAGE_VERSION = 1
+
 # --- frontend ---------------------------------------------------------------
 CARD_FILENAME = "hurricane-card.js"
 FRONTEND_URL_BASE = "/hurricane_tracker_frontend"

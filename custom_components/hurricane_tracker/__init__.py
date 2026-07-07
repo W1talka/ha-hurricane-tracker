@@ -54,6 +54,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _register_services(hass)
 
     coordinator = HurricaneCoordinator(hass, entry)
+    # Load the persisted bake cache BEFORE the first refresh, so if a feed is
+    # down at startup the first poll can already fall back to cached storms
+    # instead of waking up blind (the gap the in-memory-only v0.1.6 cache left).
+    await coordinator.async_hydrate_cache()
     await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
