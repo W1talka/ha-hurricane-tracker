@@ -32,5 +32,11 @@
         }
       }
     }
+  },
+  "issues": {
+    "blind_outage": {
+      "title": "Storm data unavailable during an active storm",
+      "description": "Hurricane Tracker knows a storm is active but can't currently show it: the data feed ({sources}) has been unreachable long enough that the last cached forecast has expired. This usually clears on its own once the feed responds. If it persists, check your internet connection and whether the source is up. This notice clears automatically when data returns."
+    }
   }
 }

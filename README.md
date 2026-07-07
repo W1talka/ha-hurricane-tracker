@@ -157,6 +157,14 @@ If you've done all three and still see the error, open
 [file an issue](https://github.com/aaronmayeux/ha-hurricane-tracker/issues) with
 what you find.
 
+**The same error, but only on a full-page (panel) dashboard, and only on the
+first load after clearing your cache?** The card's JavaScript is loaded on
+demand, and a panel-view dashboard can occasionally try to draw the card a moment
+before that script finishes loading on a cold browser cache — so you briefly see
+"custom element doesn't exist." A single refresh fixes it, and it won't recur
+once the script is cached. Regular masonry and sections dashboards don't hit
+this. If it bothers you, put the card on a normal (non-panel) view.
+
 **"Storm active — map unavailable"** (or "Storm feed unavailable") means a data
 source timed out or errored on that poll. It is deliberately **not** an all-clear:
 if a storm's map can't be loaded, the card says so rather than showing a calm sky.

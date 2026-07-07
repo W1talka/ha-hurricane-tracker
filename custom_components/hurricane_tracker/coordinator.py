@@ -34,6 +34,7 @@ from .const import (
     POLL_MINUTES,
 )
 from .geometry import assemble_payload
+from .repairs import sync_blind_outage_issue
 
 # DEV-ONLY mock (real historical storm through the real path; see _dev_mock.py).
 # Not present in the release clone -> this import cleanly no-ops there.
@@ -294,4 +295,8 @@ class HurricaneCoordinator(DataUpdateCoordinator):
         if _cache_signature(self._bake_cache) != before:
             self._store.async_delay_save(self._cache_store_data, CACHE_SAVE_DELAY_S)
         result["off_season"] = cfg["off_season"]
+        # Raise/clear the blind-outage Repairs issue to match this result. Only a
+        # genuinely blind state (known-active storm, nothing baked, cache empty)
+        # raises; a stale-but-served cone does not. Runs on the loop, idempotent.
+        sync_blind_outage_issue(self.hass, result)
         return result

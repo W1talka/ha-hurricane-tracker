@@ -58,11 +58,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # down at startup the first poll can already fall back to cached storms
     # instead of waking up blind (the gap the in-memory-only v0.1.6 cache left).
     await coordinator.async_hydrate_cache()
-    await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
+    # Do NOT block setup on the first poll. The per-storm bake -- especially the
+    # slow/flaky GDACS geometry endpoint -- can take up to GDACS_GEOMETRY_TIMEOUT
+    # (90 s) PER storm; with a couple of slow storms the first refresh has stalled
+    # HA startup for ~3 min. On a Pi that can trip HA's setup watchdog and cascade
+    # into other integrations. So we forward platforms now (entities register
+    # immediately) and kick the first poll off in the background; the card renders
+    # its normal "no data yet" state for one cycle until the poll lands. The
+    # frontend/ws are already registered above, so the dashboard resolves the card
+    # regardless. Persisted-cache hydrate already ran, so a startup-time outage can
+    # still fall back to cached storms on that first background poll.
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_create_background_task(
+        hass, coordinator.async_refresh(), "hurricane_tracker_first_refresh"
+    )
     entry.async_on_unload(entry.add_update_listener(_reload_on_change))
     return True
 
