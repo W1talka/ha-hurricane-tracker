@@ -108,6 +108,11 @@ def list_storms():
                 "alertlevel": p.get("alertlevel"),
                 "alertscore": p.get("alertscore"),
                 "affectedcountries": p.get("affectedcountries") or [],
+                # Advisory-text layer (layers.py): GDACS's own human-readable
+                # description + severity line ride this same feed poll -- zero
+                # extra HTTP. Carried as layer meta; served only on demand.
+                "htmldescription": p.get("htmldescription"),
+                "severitytext": (p.get("severitydata") or {}).get("severitytext"),
             },
         })
     return out

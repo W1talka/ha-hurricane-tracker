@@ -14,8 +14,39 @@
  * ========================================================================== */
 
 const WS_TYPE = "hurricane_tracker/data";
+const WS_LAYER_TYPE = "hurricane_tracker/layer";
 const REFRESH_MS = 5 * 60 * 1000;   // re-pull at most every 5 min (coordinator polls every 30)
 const VBW = 800, VBH = 600;
+
+/* Optional-layer registry (Session E platform). Baseline layers always draw --
+ * that's the product. These are LAZY: off by default, requested over the layer
+ * websocket only when toggled on, session-cached per (storm, advisory). `radio`
+ * names a mutual-exclusion group (one active per group; turning one on turns
+ * its siblings off) -- null means an independent toggle. Choices are sticky per
+ * BROWSER via localStorage, not card config: a layer is a viewer preference,
+ * not dashboard config, and stickiness is what makes the lazy fetch cost okay
+ * (paid once per advisory, not per glance). */
+const OPTIONAL_LAYERS = [
+  { id: "advisory", label: "Advisory text", group: "Storm info", radio: null },
+];
+const LAYER_STORE_KEY = "hurricane-card:layers";
+function loadLayerPrefs() {
+  try { return JSON.parse(localStorage.getItem(LAYER_STORE_KEY)) || {}; }
+  catch (_) { return {}; }   // storage blocked (some webviews) -> session-only
+}
+function saveLayerPrefs(p) {
+  try { localStorage.setItem(LAYER_STORE_KEY, JSON.stringify(p)); } catch (_) {}
+}
+function setLayerPref(prefs, id, on) {
+  const def = OPTIONAL_LAYERS.find((l) => l.id === id);
+  if (def && def.radio && on)   // radio group: siblings off
+    OPTIONAL_LAYERS.forEach((l) => {
+      if (l.radio === def.radio && l.id !== id) prefs[l.id] = false;
+    });
+  prefs[id] = on;
+  saveLayerPrefs(prefs);
+  return prefs;
+}
 
 /* Saffir-Simpson identity colors (fixed — a Cat-3 dot must read as Cat-3 on any
  * theme). TD/TS are the sub-hurricane intensities. */
@@ -614,7 +645,7 @@ function exposureTimeline(st, cfg) {
 
 const STYLE = `
   ha-card { padding: 0; overflow: hidden; }
-  .hu-wrap { display: flex; flex-direction: column; }
+  .hu-wrap { display: flex; flex-direction: column; position: relative; }
   .hu-tag { font: 600 13px/1 var(--ha-card-header-font-family, inherit); letter-spacing: .08em;
             text-transform: uppercase; color: var(--secondary-text-color); padding: 12px 14px 8px; }
   .hu-conewrap { position: relative; width: 100%; background: var(--hu-bg, var(--primary-background-color)); }
@@ -623,13 +654,38 @@ const STYLE = `
   .hu-svg.hu-zoomable.hu-grabbing { cursor: grabbing; }
   .hu-pan { will-change: transform; }
   .hu-overlays.hu-hide { display: none; }
-  .hu-recenter { position: absolute; top: 10px; right: 10px; z-index: 2; display: none;
-                 align-items: center; gap: 5px; border: none; cursor: pointer;
+  .hu-tools { position: absolute; top: 10px; right: 10px; z-index: 2; display: flex; gap: 6px; align-items: center; }
+  .hu-recenter { display: none; align-items: center; gap: 5px; border: none; cursor: pointer;
                  background: var(--secondary-background-color); color: var(--primary-text-color);
                  border-radius: 16px; padding: 5px 11px 5px 9px; font: 600 12px/1 sans-serif;
                  box-shadow: 0 1px 4px rgba(0,0,0,.3); opacity: .94; }
   .hu-recenter.hu-show { display: inline-flex; }
   .hu-recenter ha-icon { --mdc-icon-size: 15px; }
+  .hu-toolbtn { display: inline-flex; align-items: center; justify-content: center; border: none;
+                cursor: pointer; background: var(--secondary-background-color); color: var(--primary-text-color);
+                border-radius: 16px; width: 32px; height: 26px;
+                box-shadow: 0 1px 4px rgba(0,0,0,.3); opacity: .94; }
+  .hu-toolbtn ha-icon { --mdc-icon-size: 16px; }
+  .hu-panel { position: absolute; top: 44px; right: 10px; z-index: 3; display: none; min-width: 170px;
+              background: var(--card-background-color, var(--primary-background-color)); color: var(--primary-text-color);
+              border-radius: 8px; padding: 10px 12px; box-shadow: 0 2px 10px rgba(0,0,0,.35); }
+  .hu-panel.hu-open { display: block; }
+  .hu-panel-group { font: 700 11px/1 sans-serif; letter-spacing: .06em; text-transform: uppercase;
+                    color: var(--secondary-text-color); margin: 6px 0 4px; }
+  .hu-panel-group:first-child { margin-top: 0; }
+  .hu-panel-row { display: flex; align-items: center; gap: 8px; font: 400 13px/1.2 sans-serif;
+                  padding: 4px 0; cursor: pointer; }
+  .hu-adv { position: absolute; inset: 0; z-index: 4; display: flex; flex-direction: column;
+            background: var(--card-background-color, var(--primary-background-color)); }
+  .hu-adv-head { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+                 padding: 12px 14px 8px; font: 700 14px/1.2 sans-serif; color: var(--primary-text-color); }
+  .hu-adv-close { border: none; background: var(--secondary-background-color); color: var(--primary-text-color);
+                  border-radius: 50%; width: 26px; height: 26px; cursor: pointer; font-size: 13px; flex: none; }
+  .hu-adv-body { overflow-y: auto; padding: 0 14px 14px; }
+  .hu-adv-text { white-space: pre-wrap; overflow-wrap: break-word; color: var(--primary-text-color);
+                 font: 400 13px/1.45 ui-monospace, Menlo, Consolas, monospace; }
+  .hu-adv-wait { display: flex; justify-content: center; padding: 30px 0; }
+  .hu-adv-sub { font-size: 13px; color: var(--secondary-text-color); text-align: center; padding: 20px 0; }
   .hu-land { fill: var(--hu-land-color, var(--divider-color)); opacity: var(--hu-land-opacity, .55); stroke: none; }
   .hu-state { fill: none; stroke: var(--hu-state-color, var(--secondary-text-color)); stroke-width: var(--hu-state-width, .6); opacity: .4; }
   .hu-coast { fill: none; stroke: var(--hu-coast-color, var(--primary-text-color)); stroke-width: var(--hu-coast-width, 1); opacity: var(--hu-coast-opacity, .7); stroke-linejoin: round; stroke-linecap: round; }
@@ -684,7 +740,15 @@ const STYLE = `
 `;
 
 class HurricaneCard extends HTMLElement {
-  constructor() { super(); this._data = null; this._err = false; this._idx = 0; this._timer = null; this._built = false; this._savedView = null; this._viewStormId = null; this._resetView = false; }
+  constructor() {
+    super(); this._data = null; this._err = false; this._idx = 0; this._timer = null;
+    this._built = false; this._savedView = null; this._viewStormId = null; this._resetView = false;
+    // Optional-layer platform (Session E): sticky toggles, panel/overlay open
+    // state (kept on the instance so a background poll's re-render doesn't
+    // close them under the user), and the per-(storm,advisory) session cache.
+    this._layerPrefs = loadLayerPrefs(); this._panelOpen = false;
+    this._advOpen = false; this._advTitle = ""; this._advBody = ""; this._layerCache = {};
+  }
 
   setConfig(config) { this._config = config || {}; if (this.shadowRoot) this._render(); }
   getCardSize() { return 6; }
@@ -735,6 +799,44 @@ class HurricaneCard extends HTMLElement {
     return st ? (st.stormId || null) : null;
   }
 
+  /* Advisory-text layer (E2, first rider on the layer platform): requested over
+   * the layer websocket only when the user opens it, session-cached per
+   * (storm, advisory) -- a new advisory misses and refetches; re-open is
+   * instant. Failure renders an honest 'unavailable', never fake text. */
+  _openAdvisory() {
+    const storms = (this._data && this._data.storms) || [];
+    const st = storms[this._idx];
+    if (!st || !this._hass) return;
+    const sid = st.stormId || "";
+    const key = `advisory|${sid}|${st.advisory || ""}`;
+    this._advOpen = true;
+    this._advTitle = `${(st.meta && st.meta.name) || "Storm"} advisory`;
+    const cached = this._layerCache[key];
+    if (cached) {
+      this._advTitle = cached.title || this._advTitle;
+      this._advBody = `<div class="hu-adv-text">${esc(cached.text)}</div>`;
+      this._render();
+      return;
+    }
+    this._advBody = `<div class="hu-adv-wait"><ha-icon class="hu-msg-icon hu-spin" icon="mdi:weather-hurricane"></ha-icon></div>`;
+    this._render();
+    this._hass.callWS({ type: WS_LAYER_TYPE, storm_id: sid, layer: "advisory" }).then((res) => {
+      if (!this._advOpen) return;   // closed while loading
+      if (res && res.ok && res.text) {
+        this._layerCache[key] = res;
+        this._advTitle = res.title || this._advTitle;
+        this._advBody = `<div class="hu-adv-text">${esc(res.text)}</div>`;
+      } else {
+        this._advBody = `<div class="hu-adv-sub">Advisory text isn&rsquo;t available right now. It&rsquo;ll be retried next time you open this.</div>`;
+      }
+      this._render();
+    }).catch(() => {
+      if (!this._advOpen) return;
+      this._advBody = `<div class="hu-adv-sub">Advisory text isn&rsquo;t available right now. It&rsquo;ll be retried next time you open this.</div>`;
+      this._render();
+    });
+  }
+
   _msg(icon, title, sub, spin) {
     return `<div class="hu-msg"><ha-icon class="hu-msg-icon${spin ? " hu-spin" : ""}" icon="${icon}"></ha-icon>
       <div class="hu-msg-title">${esc(title)}</div>${sub ? `<div class="hu-msg-sub">${esc(sub)}</div>` : ""}</div>`;
@@ -778,9 +880,29 @@ class HurricaneCard extends HTMLElement {
       let svg = "";
       try { svg = buildConeSvg(st, cfg); }
       catch (e) { svg = this._msg("mdi:map-marker-alert", "Couldn\u2019t draw this storm", "", false); }
+      // Map chrome: recenter (zoom), the advisory doc button (only when that
+      // layer is on), and the gear that opens the layers panel. The panel lists
+      // OPTIONAL_LAYERS grouped by topic; the advisory overlay covers the whole
+      // card and survives background re-renders via instance state.
+      const prefs = this._layerPrefs || {};
+      let panelRows = "", lastGroup = null;
+      for (const l of OPTIONAL_LAYERS) {
+        if (l.group !== lastGroup) { panelRows += `<div class="hu-panel-group">${esc(l.group)}</div>`; lastGroup = l.group; }
+        panelRows += `<label class="hu-panel-row"><input type="checkbox" data-layer="${l.id}" ${prefs[l.id] ? "checked" : ""}/> ${esc(l.label)}</label>`;
+      }
+      const tools = `<div class="hu-tools">
+          <button class="hu-recenter" aria-label="Recenter map"><ha-icon icon="mdi:image-filter-center-focus"></ha-icon>Recenter</button>
+          ${prefs.advisory ? `<button class="hu-toolbtn hu-doc" aria-label="Advisory text" title="Advisory text"><ha-icon icon="mdi:text-box-outline"></ha-icon></button>` : ""}
+          <button class="hu-toolbtn hu-gear" aria-label="Map layers" title="Map layers"><ha-icon icon="mdi:cog-outline"></ha-icon></button>
+        </div>
+        <div class="hu-panel${this._panelOpen ? " hu-open" : ""}">${panelRows}</div>`;
+      const adv = this._advOpen ? `<div class="hu-adv">
+          <div class="hu-adv-head"><span>${esc(this._advTitle || "Advisory")}</span>
+          <button class="hu-adv-close" aria-label="Close">&#x2715;</button></div>
+          <div class="hu-adv-body">${this._advBody || ""}</div></div>` : "";
       body = `<div class="hu-tag">${esc(tagName)}</div>
-        <div class="hu-conewrap">${svg}<button class="hu-recenter" aria-label="Recenter map"><ha-icon icon="mdi:image-filter-center-focus"></ha-icon>Recenter</button></div>
-        <div class="hu-bar">${dataBar(st)}</div>${exposureTimeline(st, cfg)}${pager}${stale}`;
+        <div class="hu-conewrap">${svg}${tools}</div>
+        <div class="hu-bar">${dataBar(st)}</div>${exposureTimeline(st, cfg)}${pager}${stale}${adv}`;
     } else if (d.reason === "none_matched") {
       const n = d.activeAnywhere || 0;
       body = this._msg("mdi:map-marker-off", "No storms near you",
@@ -817,8 +939,26 @@ class HurricaneCard extends HTMLElement {
         const len = (this._data.storms || []).length;
         this._idx = (this._idx + n + len) % len;
         this._resetView = true;   // explicit storm switch -> reset pan/zoom to default
+        this._panelOpen = false;
+        this._advOpen = false;    // overlay is per-storm; a switch closes it
         this._render();
       }));
+
+    // Layer platform chrome (gear/panel/doc/overlay). All open/pref state lives
+    // on the instance, so it survives the full innerHTML rebuild every render.
+    const gear = this.shadowRoot.querySelector(".hu-gear");
+    gear && gear.addEventListener("click", () => { this._panelOpen = !this._panelOpen; this._render(); });
+    this.shadowRoot.querySelectorAll("input[data-layer]").forEach((el) =>
+      el.addEventListener("change", () => {
+        const id = el.getAttribute("data-layer");
+        this._layerPrefs = setLayerPref(this._layerPrefs || {}, id, el.checked);
+        if (id === "advisory" && !el.checked) this._advOpen = false;
+        this._render();
+      }));
+    const doc = this.shadowRoot.querySelector(".hu-doc");
+    doc && doc.addEventListener("click", () => this._openAdvisory());
+    const closeBtn = this.shadowRoot.querySelector(".hu-adv-close");
+    closeBtn && closeBtn.addEventListener("click", () => { this._advOpen = false; this._render(); });
 
     // Rebuild attaches a fresh gesture layer. Whether it starts at the default
     // frame or restores the user's zoom/pan is decided in _setupPanZoom: a storm

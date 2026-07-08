@@ -32,6 +32,7 @@ from .const import (
     SERVICE_SET_OPTIONS,
     UNITS,
 )
+from . import layers
 from .coordinator import HurricaneCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -163,7 +164,9 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
 
 # ---------------------------------------------------------------------------
 # Websocket: the card pulls the heavy geometry here (authenticated, not stored
-# in the recorder like a big entity attribute would be).
+# in the recorder like a big entity attribute would be). A second command
+# serves the on-demand optional layers (Session E): the card asks only when a
+# layer is toggled on; layers.py caches per advisory and soft-fails honestly.
 # ---------------------------------------------------------------------------
 @callback
 def _register_ws(hass: HomeAssistant) -> None:
@@ -171,11 +174,14 @@ def _register_ws(hass: HomeAssistant) -> None:
         return
     hass.data[f"{DOMAIN}_ws"] = True
 
+    def _coordinator():
+        store = hass.data.get(DOMAIN) or {}
+        return next(iter(store.values()), None)
+
     @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/data"})
     @callback
     def _ws_data(hass, connection, msg):
-        store = hass.data.get(DOMAIN) or {}
-        coordinator = next(iter(store.values()), None)
+        coordinator = _coordinator()
         payload = None
         if coordinator is not None:
             payload = {
@@ -184,4 +190,19 @@ def _register_ws(hass: HomeAssistant) -> None:
             }
         connection.send_result(msg["id"], payload)
 
+    @websocket_api.websocket_command({
+        vol.Required("type"): f"{DOMAIN}/layer",
+        vol.Required("storm_id"): str,
+        vol.Required("layer"): str,
+    })
+    @websocket_api.async_response
+    async def _ws_layer(hass, connection, msg):
+        coordinator = _coordinator()
+        if coordinator is None:
+            connection.send_result(msg["id"], {"ok": False, "reason": "unavailable"})
+            return
+        connection.send_result(msg["id"], await layers.async_get_layer(
+            hass, coordinator, msg["storm_id"], msg["layer"]))
+
     websocket_api.async_register_command(hass, _ws_data)
+    websocket_api.async_register_command(hass, _ws_layer)

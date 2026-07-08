@@ -196,7 +196,51 @@ def _build(home_lat, home_lon, basin, units, storm_filter, range_mi=None,
 
     return {"ok": True, "storms": payloads, "count": len(payloads),
             "anyStale": any(p.get("stale") for p in payloads),
-            "anyFresh": baked_ok, "ts": now_ms}
+            "anyFresh": baked_ok, "ts": now_ms,
+            "layerMeta": _layer_meta(selected[:MAX_STORMS])}
+
+
+def _layer_meta(storms):
+    """Per-storm inputs for the on-demand layer platform (layers.py), built
+    from the storm lists this poll already fetched -- no extra HTTP. GDACS
+    carries its advisory text inline (it rides the event feed); NHC carries
+    only the text-product URLs, fetched on demand. Keyed by storm id; popped
+    off the result by the coordinator so it never rides the /data websocket.
+    Built from `selected` (not `payloads`), so a stale-served storm still gets
+    its advisory layer as long as the list fetch saw it this poll."""
+    out = {}
+    for storm in storms:
+        sid = storm.get("id")
+        if not sid:
+            continue
+        g = storm.get("_gdacs")
+        if g:
+            out[sid] = {
+                "source": "gdacs", "name": storm.get("name") or "",
+                "advisory": str(g.get("episodeid") or ""),
+                "htmldescription": g.get("htmldescription"),
+                "severitytext": g.get("severitytext"),
+            }
+        else:
+            products = {}
+            pub = {}
+            for label, k in (("Public Advisory", "publicAdvisory"),
+                             ("Forecast Advisory", "forecastAdvisory"),
+                             ("Forecast Discussion", "forecastDiscussion")):
+                prod = storm.get(k)
+                if not isinstance(prod, dict):
+                    continue
+                if k == "publicAdvisory":
+                    pub = prod
+                url = prod.get("url")
+                if url:
+                    products[label] = url
+            out[sid] = {
+                "source": "nhc", "name": storm.get("name") or "",
+                "advisory": str(pub.get("advNum") or ""),
+                "products": products,
+            }
+    return out
 
 
 class HurricaneCoordinator(DataUpdateCoordinator):
@@ -212,6 +256,11 @@ class HurricaneCoordinator(DataUpdateCoordinator):
         self.entry = entry
         self._bake_cache = {}   # {storm_id: {"payload": .., "ts": epoch_ms}}
         self._store = _CacheStore(hass, CACHE_STORAGE_VERSION, CACHE_STORAGE_KEY)
+        # On-demand layer platform (layers.py). layer_meta: per-storm fetch
+        # inputs, refreshed every poll. layer_cache: served layer results,
+        # keyed (storm_id, layer, advisory) so a new advisory misses.
+        self.layer_meta = {}
+        self.layer_cache = {}
 
     async def async_hydrate_cache(self) -> None:
         """Load the persisted bake cache from .storage into _bake_cache.
@@ -294,6 +343,10 @@ class HurricaneCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"update failed: {err}") from err
         if _cache_signature(self._bake_cache) != before:
             self._store.async_delay_save(self._cache_store_data, CACHE_SAVE_DELAY_S)
+        # Layer meta is coordinator state, not card data: pop it so it rides
+        # neither the /data websocket nor diagnostics. A non-ok poll clears it
+        # (no storms shown -> no layer requests can target them).
+        self.layer_meta = result.pop("layerMeta", {}) or {}
         result["off_season"] = cfg["off_season"]
         # Raise/clear the blind-outage Repairs issue to match this result. Only a
         # genuinely blind state (known-active storm, nothing baked, cache empty)

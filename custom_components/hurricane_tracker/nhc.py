@@ -655,3 +655,36 @@ def fetch_storm_geometry(storm):
     except Exception:
         fdata["windSwath"] = []
     return fdata
+
+
+# ---------------------------------------------------------------------------
+# Advisory text products (Session E layer; on-demand only, never in the bake)
+# ---------------------------------------------------------------------------
+def fetch_advisory_text(products):
+    """Fetch NHC text products and return [(label, plain_text), ...].
+
+    `products` is {label: url} of the storm's CurrentStorms.json advisory pages
+    (publicAdvisory / forecastAdvisory / forecastDiscussion). Each page wraps
+    the raw text product in a <pre> block; we pull that and unescape entities --
+    stdlib only. Blocking: run in an executor. A product that fails or parses
+    empty is skipped, so a schema surprise degrades to fewer sections, never an
+    exception. UNVALIDATED against a live NHC storm (written to the documented
+    CurrentStorms schema) -- on the first-live-storm validation list.
+    """
+    import html as _html
+    import re
+
+    out = []
+    for label, url in (products or {}).items():
+        try:
+            raw = http_get(url)
+            m = re.search(r"<pre[^>]*>(.*?)</pre>", raw, re.S | re.I)
+            # The <pre> can carry stray inline markup (e.g. the "en Espanol"
+            # link) -- strip tags, then unescape entities. Verified on a live
+            # NHC text page (TWO uses the same template as the advisories).
+            txt = _html.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip() if m else ""
+            if txt:
+                out.append((label, txt))
+        except Exception:
+            continue
+    return out
