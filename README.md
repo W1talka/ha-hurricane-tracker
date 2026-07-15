@@ -5,7 +5,8 @@
 Draws a live tropical-cyclone forecast cone on a Lovelace card — the cone of
 uncertainty, past and forecast tracks, Saffir–Simpson forecast points, coastal
 watch/warning segments, region labels, your home location, and a data bar
-underneath. **Covers storms worldwide.**
+underneath. It also shows the NHC seven-day tropical weather outlook, including
+pre-development areas such as a 20% formation chance. **Covers storms worldwide.**
 
 The integration polls the U.S. [National Hurricane Center](https://www.nhc.noaa.gov/)
 (NHC) for the Atlantic and East/Central Pacific, and
@@ -23,6 +24,8 @@ you automatically — no manual dashboard resource to add.
   (GDACS).
 - Cone of uncertainty, past track, forecast track, and forecast dots colored by
   Saffir–Simpson category.
+- Official NHC 48-hour and seven-day formation areas, probabilities, risk colors,
+  and discussions for the Atlantic and East/Central Pacific.
 - Coastal watch/warning segments in the official NHC colors (Atlantic/Pacific;
   GDACS basins don't publish these).
 - Map overlays: region/country labels, an off-screen home marker that points
@@ -90,6 +93,8 @@ type: custom:hurricane-card
 Or pick **Hurricane Tracker** from the card picker. With no options at all it
 inherits your dashboard theme and shows everything.
 
+Set `show_outlook: false` if a particular card should show named storms only.
+
 ## Card options and theming
 
 **The card auto-themes by default.** Every part of the map and data bar reads
@@ -116,6 +121,7 @@ show_scale: false
 | Option | Effect |
 |---|---|
 | `show_land` | Land fill. |
+| `show_outlook` | NHC tropical outlook pages (default on). |
 | `show_coast` | Coastlines. |
 | `show_states` | State/province border lines. |
 | `show_cities` | City dots + names (populated places from GeoNames, biggest first). |
@@ -173,6 +179,12 @@ each with a **reset** button that clears the override and returns that element t
 your theme. The five rows marked **YAML only** (`land_opacity`, `coast_width`,
 `coast_opacity`, `state_width`, `track_past_color`) aren't in the editor — set
 them in YAML if you need them.
+
+The integration also creates an **NHC formation chance** sensor. Its state is the
+highest seven-day probability in the configured scope; attributes include the
+48-hour chance, risk levels, area name, basin, issuance time, and stale status.
+Formation data comes from the official
+[NHC Tropical Weather Outlook GIS feed](https://www.nhc.noaa.gov/gis/).
 
 ## Troubleshooting
 

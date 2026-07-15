@@ -868,6 +868,44 @@ function buildConeSvg(st, cfg, models, prefs, lay) {
   return { svg, ctx, popImpact };
 }
 
+const OUTLOOK_COLOR = { Gray: "#9E9E9E", Low: "#FDD835", Medium: "#FB8C00", High: "#E53935" };
+function outlookColor(area) {
+  if ((area.prob7 || 0) === 0 && (area.prob2 || 0) === 0) return OUTLOOK_COLOR.Gray;
+  return OUTLOOK_COLOR[area.risk7] || OUTLOOK_COLOR.Low;
+}
+function buildOutlookSvg(outlook, cfg) {
+  const proj = makeProject(outlook.bbox), smooth = cfg.smooth !== false, parts = [];
+  if (cfg.show_land !== false)
+    for (const p of (outlook.geo && outlook.geo.land) || [])
+      if (p.length >= 3) parts.push(`<path class="hu-land" d="${basePath(proj, p, true, smooth)}"/>`);
+  if (cfg.show_states !== false)
+    for (const p of (outlook.geo && outlook.geo.states) || [])
+      if (p.length >= 2) parts.push(`<path class="hu-state" d="${basePath(proj, p, false, smooth)}"/>`);
+  if (cfg.show_coast !== false)
+    for (const p of (outlook.geo && outlook.geo.coast) || [])
+      if (p.length >= 2) parts.push(`<path class="hu-coast" d="${basePath(proj, p, false, smooth)}"/>`);
+  for (const a of outlook.areas || []) {
+    const col = outlookColor(a);
+    for (const ring of a.polygons || []) if (ring.length >= 3)
+      parts.push(`<path class="hu-outlook-area" style="fill:${col};stroke:${col}" d="${basePath(proj, ring, true, false)}"/>`);
+    for (const line of a.lines || []) if (line.length >= 2)
+      parts.push(`<path class="hu-outlook-line" style="stroke:${col}" d="${basePath(proj, line, false, false)}"/>`);
+    const anchor = (a.points && a.points[0]) || (a.polygons && a.polygons[0] && a.polygons[0][0]);
+    if (anchor) {
+      const [x, y] = proj(anchor[0], anchor[1]);
+      parts.push(`<text class="hu-outlook-x" style="fill:${col}" x="${x.toFixed(1)}" y="${(y + 8).toFixed(1)}">X</text>`);
+      parts.push(`<text class="hu-outlook-pct" x="${(x + 22).toFixed(1)}" y="${(y + 6).toFixed(1)}">${esc(a.prob7Label || a.prob7 + "%")}</text>`);
+    }
+  }
+  const vb = (outlook.viewBox || outlook.bbox || []).join(" ");
+  return `<svg class="hu-svg" viewBox="0 0 ${VBW} ${VBH}" preserveAspectRatio="xMidYMid meet" data-viewbox="${vb}" data-maxscale="${outlook.maxScale || 3}" data-bbox="${(outlook.bbox || []).join(" ")}" xmlns="http://www.w3.org/2000/svg"><g class="hu-pan">${parts.join("")}</g><g class="hu-overlays"></g></svg>`;
+}
+
+function outlookDetails(outlook) {
+  const rows = (outlook.areas || []).map((a) => `<div class="hu-outlook-row"><div class="hu-outlook-title">${esc(a.title)}</div><div><b>48 hours:</b> ${esc(a.prob2Label)} (${esc(a.risk2)}) &nbsp; <b>7 days:</b> ${esc(a.prob7Label)} (${esc(a.risk7)})</div><button class="hu-outlook-more" data-outlook-area="${esc(a.number)}">Discussion</button></div>`).join("");
+  return `<div class="hu-outlook-list">${rows}</div>`;
+}
+
 function dataBar(st, lay, popImpact) {
   const m = st.meta || {};
   let name = (m.name || "Storm").replace(/\s*\([^)]*\)\s*$/, "").trim();
@@ -1145,6 +1183,14 @@ const STYLE = `
   .hu-pager button { border: none; background: var(--secondary-background-color); color: var(--primary-text-color);
                      border-radius: 50%; width: 30px; height: 30px; font-size: 16px; cursor: pointer; }
   .hu-pager .hu-page { font-size: 13px; color: var(--secondary-text-color); min-width: 40px; text-align: center; }
+  .hu-outlook-area { fill-opacity: .28; stroke-width: 3; stroke-opacity: .9; }
+  .hu-outlook-line { fill: none; stroke-width: 3; stroke-dasharray: 8 6; }
+  .hu-outlook-x { font: 900 32px/1 sans-serif; text-anchor: middle; paint-order: stroke; stroke: #111; stroke-width: 2px; }
+  .hu-outlook-pct { font: 800 18px/1 sans-serif; fill: var(--primary-text-color); paint-order: stroke; stroke: var(--hu-bg, var(--primary-background-color)); stroke-width: 4px; }
+  .hu-outlook-list { padding: 8px 14px 12px; color: var(--secondary-text-color); font-size: 13px; }
+  .hu-outlook-row + .hu-outlook-row { border-top: 1px solid var(--divider-color); margin-top: 9px; padding-top: 9px; }
+  .hu-outlook-title { color: var(--primary-text-color); font-size: 16px; font-weight: 700; margin-bottom: 4px; }
+  .hu-outlook-more { border: 0; border-radius: 14px; padding: 5px 10px; margin-top: 7px; cursor: pointer; color: var(--primary-text-color); background: var(--secondary-background-color); }
 `;
 
 class HurricaneCard extends HTMLElement {
@@ -1196,7 +1242,7 @@ class HurricaneCard extends HTMLElement {
   _fetch() {
     if (!this._hass) return;
     this._hass.callWS({ type: WS_TYPE }).then((res) => {
-      const prevId = this._currentStormId();   // remember which storm the user is on
+      const prevId = this._currentPageId();
       this._data = res && res.data ? res.data : null;
       this._lastOk = res ? res.last_success !== false : true;
       this._err = false;
@@ -1204,10 +1250,10 @@ class HurricaneCard extends HTMLElement {
       // storm 1). Re-find it by id in the new list; fall back to 0 if it's gone.
       // A poll is NOT a storm switch, so the pan/zoom view is preserved (see
       // _setupPanZoom) -- only an explicit pager tap or a storm change resets it.
-      const storms = (this._data && this._data.storms) || [];
+      const pages = this._pages();
       let idx = 0;
       if (prevId != null) {
-        const found = storms.findIndex((s) => s.stormId === prevId);
+        const found = pages.findIndex((p) => p.id === prevId);
         if (found >= 0) idx = found;
       }
       this._idx = idx;
@@ -1218,11 +1264,19 @@ class HurricaneCard extends HTMLElement {
     });
   }
 
-  // Id of the storm currently shown (for view/selection continuity across polls).
+  _pages() {
+    const d = this._data || {};
+    const pages = (d.storms || []).map((data) => ({ kind: "storm", data, id: `storm:${data.stormId || ""}` }));
+    if ((this._config || {}).show_outlook !== false)
+      pages.push(...(d.outlooks || []).map((data) => ({ kind: "outlook", data, id: data.id || `outlook:${data.basin}` })));
+    return pages;
+  }
+  _currentPageId() {
+    const p = this._pages()[this._idx];
+    return p ? p.id : null;
+  }
   _currentStormId() {
-    const storms = (this._data && this._data.storms) || [];
-    const st = storms[this._idx];
-    return st ? (st.stormId || null) : null;
+    return this._currentPageId();
   }
 
   /* Advisory-text layer (E2, first rider on the layer platform): requested over
@@ -1327,20 +1381,31 @@ class HurricaneCard extends HTMLElement {
       body = this._err
         ? this._msg("mdi:cloud-alert", "Can\u2019t reach Home Assistant", "Retrying automatically\u2026", false)
         : this._msg("mdi:weather-hurricane", "Loading\u2026", "", true);
-    } else if (d.ok && (d.storms || []).length) {
-      const storms = d.storms;
-      if (this._idx >= storms.length) this._idx = 0;
-      const st = storms[this._idx];
+    } else if (this._pages().length) {
+      const pages = this._pages();
+      if (this._idx >= pages.length) this._idx = 0;
+      const page = pages[this._idx];
+      if (page.kind === "outlook") {
+        const o = page.data;
+        const pager = pages.length > 1 ? `<div class="hu-pager"><button data-nav="-1" aria-label="Previous page">\u2039</button><span class="hu-page">${this._idx + 1} / ${pages.length}</span><button data-nav="1" aria-label="Next page">\u203a</button></div>` : "";
+        const stale = o.stale ? `<div class="hu-stale">Live outlook unreachable \u2014 showing last update${o.bakedTs ? " from " + esc(fmtLocal(o.bakedTs)) : ""}.</div>` : "";
+        const warning = d.reason === "unavailable" ? `<div class="hu-stale">Storm tracking feed is partly unavailable; this outlook may not show named storms.</div>` : "";
+        const adv = this._advOpen ? `<div class="hu-adv"><div class="hu-adv-head"><span>${esc(this._advTitle || "Outlook discussion")}</span><button class="hu-adv-close" aria-label="Close">&#x2715;</button></div><div class="hu-adv-body">${this._advBody || ""}</div></div>` : "";
+        body = `<div class="hu-tag">${esc(cfg.title != null ? cfg.title : `Tropical Outlook \u00b7 ${o.basinName || ""}`)}</div><div class="hu-conewrap">${buildOutlookSvg(o, cfg)}</div>${outlookDetails(o)}${pager}${warning}${stale}${adv}`;
+        this._labelCtx = null;
+      } else {
+      const storms = d.storms || [];
+      const st = page.data;
       // Per-storm staleness: this storm's live re-bake failed and we're showing
       // its last-good cached cone. Name the time so the user knows how old it is.
       const stale = st.stale
         ? `<div class="hu-stale">Live feed unreachable \u2014 showing last update${
             st.bakedTs ? " from " + esc(fmtLocal(st.bakedTs)) : ""}.</div>` : "";
       let pager = "";
-      if (storms.length > 1) {
+      if (pages.length > 1) {
         pager = `<div class="hu-pager">
           <button data-nav="-1" aria-label="Previous storm">\u2039</button>
-          <span class="hu-page">${this._idx + 1} / ${storms.length}</span>
+          <span class="hu-page">${this._idx + 1} / ${pages.length}</span>
           <button data-nav="1" aria-label="Next storm">\u203a</button></div>`;
       }
       const tagName = cfg.title != null ? cfg.title : `Hurricane \u00b7 ${(st.meta && st.meta.basinName) || ""}`;
@@ -1408,6 +1473,7 @@ class HurricaneCard extends HTMLElement {
       body = `<div class="hu-tag">${esc(tagName)}</div>
         <div class="hu-conewrap">${svg}${tools}</div>
         <div class="hu-bar">${dataBar(st, lay, popImpact)}</div>${exposureTimeline(st, cfg)}${pager}${stale}${adv}`;
+      }
     } else if (d.reason === "none_matched") {
       const n = d.activeAnywhere || 0;
       body = this._msg("mdi:map-marker-off", "No storms near you",
@@ -1441,7 +1507,7 @@ class HurricaneCard extends HTMLElement {
     this.shadowRoot.querySelectorAll("[data-nav]").forEach((b) =>
       b.addEventListener("click", () => {
         const n = Number(b.getAttribute("data-nav"));
-        const len = (this._data.storms || []).length;
+        const len = this._pages().length;
         this._idx = (this._idx + n + len) % len;
         this._resetView = true;   // explicit storm switch -> reset pan/zoom to default
         this._panelOpen = false;
@@ -1473,6 +1539,15 @@ class HurricaneCard extends HTMLElement {
     doc && doc.addEventListener("click", () => this._openAdvisory());
     const closeBtn = this.shadowRoot.querySelector(".hu-adv-close");
     closeBtn && closeBtn.addEventListener("click", () => { this._advOpen = false; this._render(); });
+    this.shadowRoot.querySelectorAll("[data-outlook-area]").forEach((el) =>
+      el.addEventListener("click", () => {
+        const page = this._pages()[this._idx];
+        const a = page && page.kind === "outlook" && (page.data.areas || []).find((x) => String(x.number) === el.getAttribute("data-outlook-area"));
+        if (!a) return;
+        this._advOpen = true; this._advTitle = a.title || "Outlook discussion";
+        this._advBody = `<div class="hu-adv-text">${esc(a.discussion || "No discussion is available.")}</div>`;
+        this._render();
+      }));
 
     // Rebuild attaches a fresh gesture layer. Whether it starts at the default
     // frame or restores the user's zoom/pan is decided in _setupPanZoom: a storm
@@ -1697,6 +1772,7 @@ class HurricaneCard extends HTMLElement {
 /* ---- lightweight visual editor (optional; YAML config also fully works) ---- */
 const EDITOR_FIELDS = [
   { key: "title", label: "Title override", type: "text" },
+  { key: "show_outlook", label: "Show tropical outlook", type: "bool", def: true },
   { key: "show_land", label: "Show land fill", type: "bool", def: true },
   { key: "show_coast", label: "Show coastlines", type: "bool", def: true },
   { key: "show_states", label: "Show state/province lines", type: "bool", def: true },

@@ -35,6 +35,10 @@ def _result_summary(data) -> dict:
         "reason": data.get("reason"),
         "ts": data.get("ts"),
         "off_season": data.get("off_season"),
+        "outlookCount": data.get("outlookCount"),
+        "outlookStale": data.get("outlookStale"),
+        "outlookUnavailable": data.get("outlookUnavailable"),
+        "outlookCovered": data.get("outlookCovered"),
     }
     if data.get("ok"):
         storms = data.get("storms") or []
@@ -80,6 +84,9 @@ async def async_get_config_entry_diagnostics(
         diag["result"] = _result_summary(store.data)
         diag["last_update_success"] = store.last_update_success
         diag["bake_cache"] = _cache_summary(store)
+        oc = getattr(store, "_outlook_cache", None) or {}
+        diag["outlook_cache"] = {"present": bool(oc.get("data")),
+                                  "ts": oc.get("ts")}
     else:
         diag["result"] = {"present": False}
     return diag

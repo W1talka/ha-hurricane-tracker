@@ -908,3 +908,42 @@ def assemble_payload(storm, fdata, home_lat, home_lon, units):
         "popGrid": pop_grid,
         "meta": meta,
     }
+
+
+def assemble_outlook_payload(basin, areas, issued, home_lat, home_lon, stale=False,
+                             baked_ts=None):
+    """Build one draw-ready NHC outlook page for a basin."""
+    pts = []
+    for area in areas:
+        pts.extend(area.get("points") or [])
+        for part in (area.get("polygons") or []) + (area.get("lines") or []):
+            pts.extend(part)
+    if not pts:
+        return None
+    lngs, lats = [p[0] for p in pts], [p[1] for p in pts]
+    mnx, mxx, mny, mxy = min(lngs), max(lngs), min(lats), max(lats)
+    w, h = max(mxx - mnx, 3), max(mxy - mny, 3)
+    pad = max(w, h) * .22
+    bbox = [round(mnx - pad, 3), round(mny - pad, 3),
+            round(mxx + pad, 3), round(mxy + pad, 3)]
+    # Match the card's 4:3 frame.
+    cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
+    w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    if w / h < 4 / 3:
+        w = h * 4 / 3
+    else:
+        h = w * 3 / 4
+    bbox = [round(cx - w / 2, 3), round(cy - h / 2, 3),
+            round(cx + w / 2, 3), round(cy + h / 2, 3)]
+    basemap = load_basemap()
+    geo = clip_basemap(basemap, bbox, max(w, h) * .12,
+                       ref_span=max(w, h), budget=ZOOM_POINT_BUDGET,
+                       cap_bytes=ZOOM_PAYLOAD_CAP_BYTES)
+    labels = [r for r in REGION_LABELS if bbox[1] <= r["lat"] <= bbox[3]
+              and bbox[0] <= r["lng"] <= bbox[2]]
+    return {"id": "outlook:%s" % basin, "basin": basin,
+            "basinName": BASIN_NAME.get(basin, basin), "issued": issued,
+            "stale": stale, "bakedTs": baked_ts, "bbox": bbox,
+            "viewBox": bbox, "maxScale": ZOOM_MAX_SCALE,
+            "home": [home_lon, home_lat], "geo": geo, "labels": labels,
+            "areas": areas}

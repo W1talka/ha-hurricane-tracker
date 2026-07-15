@@ -87,6 +87,9 @@ POLL_MINUTES = 30
 # of the world's basins, open GeoJSON, attribution "Global Disaster Alert and
 # Coordination System, GDACS".
 CURRENT_STORMS_URL = "https://www.nhc.noaa.gov/CurrentStorms.json"
+GTWO_URL = "https://www.nhc.noaa.gov/xgtwo/gtwo_shapefiles.zip"
+# Keep one missed/outage cycle useful without presenting an old outlook forever.
+OUTLOOK_CACHE_MAX_AGE_MS = 12 * 60 * 60 * 1000
 GDACS_EVENTS_URL = "https://www.gdacs.org/gdacsapi/api/Events/geteventlist/EVENTS4APP"
 HTTP_TIMEOUT = 45
 # GDACS's per-event GEOMETRY endpoint (the cone polygon) is materially slower and

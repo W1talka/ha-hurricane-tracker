@@ -14,6 +14,7 @@ from __future__ import annotations
 import io
 import json
 import math
+import re
 import struct
 import urllib.parse
 import urllib.request
@@ -34,8 +35,10 @@ from .const import (
     BASIN_SOUTH_PACIFIC,
     BASIN_SW_INDIAN,
     CURRENT_STORMS_URL,
+    GTWO_URL,
     FILTER_ALL,
     HTTP_TIMEOUT,
+    NHC_BASINS,
     MODEL_TRACK_MAX_PTS,
     MODEL_TRACK_MAX_TAU,
     MODEL_TRACK_STALE_H,
@@ -127,6 +130,140 @@ def _parts_points(rec):
 def _point_xy(rec):
     x, y = struct.unpack("<dd", rec[4:20])
     return [x, y]
+
+
+def _zip_member(zf, prefix, suffix):
+    """Return the first GTWO member matching its timestamped filename."""
+    return next((n for n in zf.namelist()
+                 if n.lower().split("/")[-1].startswith(prefix)
+                 and n.lower().endswith(suffix)), None)
+
+
+def _outlook_sections(text):
+    sections = {}
+    matches = list(re.finditer(r"(?m)^(\d+)\.\s+(.+?):\s*$", text))
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        body = text[m.end():end].strip()
+        body = re.split(r"(?m)^(?:Forecaster|Public Advisories)", body)[0].strip()
+        sections[m.group(1)] = {"title": m.group(2).strip(), "discussion": body}
+    issued = ""
+    for line in text.splitlines():
+        if re.search(r"\b(?:AM|PM)\s+(?:EDT|EST|CDT|CST|MDT|MST|PDT|PST|HST)\b", line):
+            issued = line.strip()
+            break
+    return issued, sections
+
+
+def _prob(v):
+    m = re.search(r"\d+", str(v or ""))
+    return int(m.group()) if m else 0
+
+
+def _outlook_basin(row, section, coords):
+    basin = (row.get("BASIN") or "").lower()
+    if basin.startswith("atl"):
+        return BASIN_ATLANTIC
+    title = (section or {}).get("title", "")
+    if re.search(r"\bCP\d{2}\b", title, re.I):
+        return BASIN_CENTRAL_PACIFIC
+    if re.search(r"\bEP\d{2}\b", title, re.I):
+        return BASIN_EAST_PACIFIC
+    pts = [p for part in coords for p in part]
+    if pts:
+        lng = sum(p[0] for p in pts) / len(pts)
+        lat = sum(p[1] for p in pts) / len(pts)
+        return basin_from_latlon(lat, lng)
+    return BASIN_EAST_PACIFIC
+
+
+def fetch_outlooks():
+    """Fetch and normalize NHC's official seven-day tropical outlook GIS."""
+    raw = http_get(GTWO_URL, binary=True)
+    with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+        texts = {}
+        issued = ""
+        sections = {}
+        for key, prefix in (("Atlantic", "two_atl_text_"),
+                            ("Pacific", "two_pac_text_")):
+            name = _zip_member(zf, prefix, ".rtf")
+            txt = zf.read(name).decode("utf-8", "replace") if name else ""
+            texts[key] = txt
+            this_issued, sec = _outlook_sections(txt)
+            issued = issued or this_issued
+            sections[key] = sec
+
+        def records(kind):
+            dbf = _zip_member(zf, "gtwo_%s_" % kind, ".dbf")
+            shp = _zip_member(zf, "gtwo_%s_" % kind, ".shp")
+            if not dbf or not shp:
+                return []
+            rows = _read_dbf(zf.read(dbf))[1]
+            geoms = []
+            for typ, rec in _shp_records(zf.read(shp)):
+                if typ in (3, 5):
+                    geoms.append(_parts_points(rec))
+                elif typ == 1:
+                    geoms.append([[_point_xy(rec)]])
+                else:
+                    geoms.append([])
+            return list(zip(rows, geoms))
+
+        by_key = {}
+        for kind, out_key in (("areas", "polygons"), ("lines", "lines"),
+                              ("points", "points")):
+            for row, parts in records(kind):
+                key = ((row.get("BASIN") or "").lower(), str(row.get("AREA") or ""))
+                item = by_key.setdefault(key, {"row": row, "polygons": [],
+                                               "lines": [], "points": []})
+                if kind == "points":
+                    item[out_key].extend(p[0] for p in parts if p)
+                else:
+                    item[out_key].extend(parts)
+
+    areas = []
+    for (source_basin, number), item in by_key.items():
+        text_key = "Atlantic" if source_basin.startswith("atl") else "Pacific"
+        section = sections.get(text_key, {}).get(number, {})
+        coords = item["polygons"] or item["lines"] or [[p] for p in item["points"]]
+        basin = _outlook_basin(item["row"], section, coords)
+        row = item["row"]
+        p2, p7 = _prob(row.get("PROB2DAY")), _prob(row.get("PROB7DAY"))
+        discussion = section.get("discussion", "")
+        areas.append({
+            "number": number, "basin": basin,
+            "title": section.get("title") or "Disturbance %s" % number,
+            "discussion": discussion,
+            "prob2": p2, "prob7": p7,
+            "prob2Label": "near 0%" if p2 == 0 and "near 0 percent" in discussion.lower() else "%d%%" % p2,
+            "prob7Label": "near 0%" if p7 == 0 and "near 0 percent" in discussion.lower() else "%d%%" % p7,
+            "risk2": (row.get("RISK2DAY") or "").title(),
+            "risk7": (row.get("RISK7DAY") or "").title(),
+            "polygons": item["polygons"], "lines": item["lines"],
+            "points": item["points"],
+        })
+    return {"issued": issued, "areas": areas}
+
+
+def select_outlook_areas(areas, home_lat, home_lon, basin_cfg, range_mi=None):
+    """Apply the integration's geographic scope to formation areas."""
+    target = basin_cfg
+    if target == BASIN_AUTO:
+        target = basin_from_latlon(home_lat, home_lon)
+    if target not in (BASIN_GLOBAL, BASIN_RANGE) and target not in NHC_BASINS:
+        return []
+    selected = []
+    for area in areas or []:
+        if target == BASIN_GLOBAL or area.get("basin") == target:
+            selected.append(area)
+            continue
+        if target == BASIN_RANGE:
+            pts = list(area.get("points") or [])
+            for part in (area.get("polygons") or []) + (area.get("lines") or []):
+                pts.extend(part)
+            if pts and min(haversine_mi(home_lat, home_lon, p[1], p[0]) for p in pts) <= (range_mi or 0):
+                selected.append(area)
+    return selected
 
 
 # ---------------------------------------------------------------------------

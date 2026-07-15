@@ -14,7 +14,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfLength
+from homeassistant.const import PERCENTAGE, UnitOfLength
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -49,6 +49,7 @@ async def async_setup_entry(
         HurricaneDistanceSensor(coordinator, entry, length_unit),
         HurricaneClosestApproachSensor(coordinator, entry, length_unit),
         HurricaneCategorySensor(coordinator, entry),
+        NHCFormationChanceSensor(coordinator, entry),
     ])
 
 
@@ -196,3 +197,42 @@ class HurricaneCategorySensor(_HurricaneEntity):
     @property
     def extra_state_attributes(self):
         return {"label": _CAT_LABEL.get(self._meta().get("cat"), "")}
+
+
+class NHCFormationChanceSensor(_HurricaneEntity):
+    """Highest seven-day NHC formation chance in the configured scope."""
+
+    _attr_name = "NHC formation chance"
+    _attr_icon = "mdi:weather-cloudy-alert"
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_nhc_formation_chance"
+
+    def _areas(self):
+        data = self.coordinator.data or {}
+        return [a for page in (data.get("outlooks") or [])
+                for a in (page.get("areas") or [])]
+
+    @property
+    def native_value(self):
+        data = self.coordinator.data or {}
+        if data.get("outlookUnavailable") or data.get("outlookCovered") is False:
+            return None
+        areas = self._areas()
+        return max((a.get("prob7", 0) for a in areas), default=0)
+
+    @property
+    def extra_state_attributes(self):
+        data = self.coordinator.data or {}
+        areas = self._areas()
+        area = max(areas, key=lambda a: a.get("prob7", 0)) if areas else {}
+        page = next((p for p in (data.get("outlooks") or [])
+                     if area in (p.get("areas") or [])), {})
+        return {"chance_48h": area.get("prob2"),
+                "risk_48h": area.get("risk2"), "risk_7d": area.get("risk7"),
+                "area": area.get("title"), "basin": page.get("basinName"),
+                "outlook_count": len(areas), "issued": page.get("issued"),
+                "stale": data.get("outlookStale", False)}

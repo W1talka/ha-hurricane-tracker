@@ -31,9 +31,10 @@ from .const import (
     CACHE_STORAGE_VERSION,
     CURRENT_STORMS_URL,
     NHC_BASINS,
+    OUTLOOK_CACHE_MAX_AGE_MS,
     POLL_MINUTES,
 )
-from .geometry import assemble_payload
+from .geometry import assemble_outlook_payload, assemble_payload
 from .repairs import sync_blind_outage_issue
 
 # DEV-ONLY mock (real historical storm through the real path; see _dev_mock.py).
@@ -84,7 +85,7 @@ class _CacheStore(Store):
 
 
 def _build(home_lat, home_lon, basin, units, storm_filter, range_mi=None,
-           cache=None):
+           cache=None, outlook_cache=None):
     """Blocking pipeline: fetch (NHC + GDACS) -> merge/dedupe -> select -> bake.
     Returns the coordinator data dict. Runs inside an executor.
 
@@ -96,7 +97,50 @@ def _build(home_lat, home_lon, basin, units, storm_filter, range_mi=None,
 
     if cache is None:
         cache = {}
+    if outlook_cache is None:
+        outlook_cache = {}
     now_ms = int(time.time() * 1000)
+
+    outlook_raw = None
+    outlook_stale = False
+    outlook_unavailable = False
+    try:
+        outlook_raw = nhc.fetch_outlooks()
+        outlook_cache.clear()
+        outlook_cache.update({"data": outlook_raw, "ts": now_ms})
+    except Exception as err:
+        _LOGGER.warning("hurricane_tracker: NHC outlook fetch failed: %s", err)
+        if (outlook_cache.get("data") and outlook_cache.get("ts")
+                and now_ms - outlook_cache["ts"] <= OUTLOOK_CACHE_MAX_AGE_MS):
+            outlook_raw = outlook_cache["data"]
+            outlook_stale = True
+        else:
+            outlook_unavailable = True
+
+    outlooks = []
+    outlook_covered = (basin in NHC_BASINS or basin in ("global", "range")
+                       or (basin == "auto" and nhc.basin_from_latlon(
+                           home_lat, home_lon) in NHC_BASINS))
+    if outlook_raw:
+        selected_outlooks = nhc.select_outlook_areas(
+            outlook_raw.get("areas"), home_lat, home_lon, basin, range_mi)
+        grouped = {}
+        for area in selected_outlooks:
+            grouped.setdefault(area.get("basin"), []).append(area)
+        for bkey in ("atlantic", "east_pacific", "central_pacific"):
+            if grouped.get(bkey):
+                payload = assemble_outlook_payload(
+                    bkey, grouped[bkey], outlook_raw.get("issued", ""),
+                    home_lat, home_lon, outlook_stale, outlook_cache.get("ts"))
+                if payload:
+                    outlooks.append(payload)
+
+    def finish(result):
+        result.update({"outlooks": outlooks, "outlookCount": len(outlooks),
+                       "outlookStale": outlook_stale,
+                       "outlookUnavailable": outlook_unavailable,
+                       "outlookCovered": outlook_covered})
+        return result
 
     if _dev_mock is not None and getattr(_dev_mock, "ENABLED", False):
         mock = _dev_mock.build(home_lat, home_lon, units)
@@ -138,10 +182,10 @@ def _build(home_lat, home_lon, basin, units, storm_filter, range_mi=None,
             reason = "none_matched"
         else:
             reason = "clear"
-        return {"ok": False, "reason": reason,
+        return finish({"ok": False, "reason": reason,
                 "activeAnywhere": len(active),
                 "failedSources": errors,
-                "ts": now_ms}
+                "ts": now_ms})
 
     payloads = []
     baked_ok = False        # did at least one storm bake fresh this poll?
@@ -189,15 +233,15 @@ def _build(home_lat, home_lon, basin, units, storm_filter, range_mi=None,
         # Name the source(s) whose bake failed so the card can say "GDACS" rather
         # than a generic "storm feed" (the list fetch succeeded, so we know which).
         failed = errors or sorted(bake_failed_sources) or ["storm feed"]
-        return {"ok": False, "reason": "unavailable",
+        return finish({"ok": False, "reason": "unavailable",
                 "activeAnywhere": len(active),
                 "failedSources": failed,
-                "ts": now_ms}
+                "ts": now_ms})
 
-    return {"ok": True, "storms": payloads, "count": len(payloads),
+    return finish({"ok": True, "storms": payloads, "count": len(payloads),
             "anyStale": any(p.get("stale") for p in payloads),
             "anyFresh": baked_ok, "ts": now_ms,
-            "layerMeta": _layer_meta(selected[:MAX_STORMS], home_lat, home_lon)}
+            "layerMeta": _layer_meta(selected[:MAX_STORMS], home_lat, home_lon)})
 
 
 def _layer_meta(storms, home_lat=None, home_lon=None):
@@ -262,6 +306,7 @@ class HurricaneCoordinator(DataUpdateCoordinator):
         )
         self.entry = entry
         self._bake_cache = {}   # {storm_id: {"payload": .., "ts": epoch_ms}}
+        self._outlook_cache = {}  # last-good normalized GTWO, independent of storms
         self._store = _CacheStore(hass, CACHE_STORAGE_VERSION, CACHE_STORAGE_KEY)
         # On-demand layer platform (layers.py). layer_meta: per-storm fetch
         # inputs, refreshed every poll. layer_cache: served layer results,
@@ -300,6 +345,10 @@ class HurricaneCoordinator(DataUpdateCoordinator):
                             reverse=True)[:MAX_STORMS]
             fresh = dict(newest)
         self._bake_cache = fresh
+        outlook = stored.get("outlook") or {}
+        if (isinstance(outlook, dict) and outlook.get("data") and outlook.get("ts")
+                and now_ms - outlook["ts"] <= OUTLOOK_CACHE_MAX_AGE_MS):
+            self._outlook_cache = outlook
         if fresh:
             _LOGGER.info("hurricane_tracker: hydrated %d cached bake(s) from "
                          "storage", len(fresh))
@@ -309,7 +358,7 @@ class HurricaneCoordinator(DataUpdateCoordinator):
         """Snapshot for Store.async_delay_save (called by the delayed save).
         Wrapped under an `entries` key so the schema can grow without a version
         bump. Payloads are already JSON-safe (they serialize over the WS)."""
-        return {"entries": self._bake_cache}
+        return {"entries": self._bake_cache, "outlook": self._outlook_cache}
 
     def _cfg(self):
         """Options override data (options flow is how settings get edited)."""
@@ -340,15 +389,16 @@ class HurricaneCoordinator(DataUpdateCoordinator):
         # _build mutates self._bake_cache in the executor thread. Snapshot its
         # signature before/after so we can persist ONLY when it actually changed
         # (a fresh bake or a prune) -- no change, no write.
-        before = _cache_signature(self._bake_cache)
+        before = (_cache_signature(self._bake_cache), self._outlook_cache.get("ts"))
         try:
             result = await self.hass.async_add_executor_job(
                 _build, cfg["lat"], cfg["lon"], cfg["basin"], cfg["units"],
-                cfg["filter"], range_mi, self._bake_cache,
+                cfg["filter"], range_mi, self._bake_cache, self._outlook_cache,
             )
         except Exception as err:
             raise UpdateFailed(f"update failed: {err}") from err
-        if _cache_signature(self._bake_cache) != before:
+        after = (_cache_signature(self._bake_cache), self._outlook_cache.get("ts"))
+        if after != before:
             self._store.async_delay_save(self._cache_store_data, CACHE_SAVE_DELAY_S)
         # Layer meta is coordinator state, not card data: pop it so it rides
         # neither the /data websocket nor diagnostics. A non-ok poll clears it
